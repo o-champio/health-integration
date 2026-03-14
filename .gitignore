@@ -145,3 +145,10 @@ __pypackages__/
 .pdm-python
 .pdm-build/
 .pixi
+
+# Agents
+.claude/
+
+# Tests
+tests/
+
