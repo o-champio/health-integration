@@ -1,0 +1,48 @@
+# Private credentials
+secrets.py
+.env
+
+# OAuth tokens
+oura_token.json
+*.token.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+
+# Testing & coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# IDEs
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+.cursor/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Mypy / type checkers
+.mypy_cache/
+.dmypy.json
