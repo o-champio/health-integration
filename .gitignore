@@ -1,12 +1,19 @@
 # ── Project-specific ─────────────────────────────────────────────────────────
 # Private credentials
+credentials.py
+config/credentials.py
 secrets.py
 .env
 .envrc
 
 # OAuth tokens
+auth/tokens/
 oura_token.json
 *.token.json
+
+# Data (raw CSVs and processed outputs)
+data/raw/
+data/processed/
 
 # ── Python (GitHub template) ──────────────────────────────────────────────────
 # Byte-compiled / optimized / DLL files
@@ -149,7 +156,6 @@ __pypackages__/
 # Agents
 .claude/
 
-# Tests
-tests/
+# Legacy (kept until migration verified)
 libre_data/
 
