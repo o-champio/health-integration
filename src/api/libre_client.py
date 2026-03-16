@@ -101,45 +101,31 @@ def daily_glucose_stats(glucose: pd.DataFrame) -> pd.DataFrame:
     g = glucose.copy()
     g["date"] = g["timestamp"].dt.normalize()
 
-    stats = (
-        g.groupby("date")["glucose_mgdl"]
-        .agg(
-            glucose_mean="mean",
-            glucose_std="std",
-            glucose_min="min",
-            glucose_max="max",
-            glucose_readings="count",
-        )
-        .round(2)
-    )
+    # Single groupby pass: compute all stats at once using a custom aggregator
+    # to avoid 5 separate groupby scans over the same data.
+    low, high = cfg.GLUCOSE_LOW, cfg.GLUCOSE_HIGH
 
-    total = g.groupby("date").size().rename("_total")
-    in_range = (
-        g[(g["glucose_mgdl"] >= cfg.GLUCOSE_LOW) & (g["glucose_mgdl"] <= cfg.GLUCOSE_HIGH)]
-        .groupby("date").size().rename("_in_range")
-    )
-    below_range = (
-        g[g["glucose_mgdl"] < cfg.GLUCOSE_LOW]
-        .groupby("date").size().rename("_below")
-    )
-    above_range = (
-        g[g["glucose_mgdl"] > cfg.GLUCOSE_HIGH]
-        .groupby("date").size().rename("_above")
-    )
+    def _agg(vals: pd.Series) -> pd.Series:
+        n = len(vals)
+        mean = vals.mean()
+        std = vals.std()
+        in_r = ((vals >= low) & (vals <= high)).sum()
+        below = (vals < low).sum()
+        above = (vals > high).sum()
+        return pd.Series({
+            "glucose_mean": round(mean, 2),
+            "glucose_std": round(std, 2),
+            "glucose_min": round(vals.min(), 2),
+            "glucose_max": round(vals.max(), 2),
+            "glucose_readings": n,
+            "glucose_tir": round(in_r / n, 3),
+            "glucose_tbr": round(below / n, 3),
+            "glucose_tar": round(above / n, 3),
+            "glucose_cv": round(std / mean, 3) if mean else float("nan"),
+            "glucose_gmi": round(3.31 + 0.02392 * mean, 2),
+        })
 
-    stats = stats.join(total, how="left")
-    stats = stats.join(in_range, how="left")
-    stats = stats.join(below_range, how="left")
-    stats = stats.join(above_range, how="left")
-
-    stats["glucose_tir"] = (stats["_in_range"].fillna(0) / stats["_total"]).round(3)
-    stats["glucose_tbr"] = (stats["_below"].fillna(0) / stats["_total"]).round(3)
-    stats["glucose_tar"] = (stats["_above"].fillna(0) / stats["_total"]).round(3)
-    stats["glucose_cv"] = (stats["glucose_std"] / stats["glucose_mean"]).round(3)
-    # GMI = 3.31 + 0.02392 * mean_glucose  (Bergenstal et al., 2018)
-    stats["glucose_gmi"] = (3.31 + 0.02392 * stats["glucose_mean"]).round(2)
-    stats = stats.drop(columns=["_total", "_in_range", "_below", "_above"])
-
+    stats = g.groupby("date")["glucose_mgdl"].apply(_agg)
     return stats.reset_index()
 
 

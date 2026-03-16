@@ -19,6 +19,10 @@ log = logging.getLogger(__name__)
 
 # -- Token / session -----------------------------------------------------------
 
+# In-memory token cache; avoids a disk read on every API call.
+_token_cache: dict | None = None
+
+
 def _load_token() -> dict:
     """Load the saved token from disk."""
     path = Path(cfg.TOKEN_FILE)
@@ -30,10 +34,20 @@ def _load_token() -> dict:
         return json.load(f)
 
 
+def _get_token() -> dict:
+    """Return the current token, loading from disk only on first call."""
+    global _token_cache
+    if _token_cache is None:
+        _token_cache = _load_token()
+    return _token_cache
+
+
 def _save_token(token: dict) -> None:
+    global _token_cache
     Path(cfg.TOKEN_DIR).mkdir(parents=True, exist_ok=True)
     with open(cfg.TOKEN_FILE, "w") as f:
         json.dump(token, f)
+    _token_cache = token
 
 
 def _refresh_token(token: dict) -> dict:
@@ -59,7 +73,7 @@ def _refresh_token(token: dict) -> dict:
 
 def _get(endpoint: str, params: dict | None = None) -> dict:
     """Authenticated GET to Oura v2 API. Auto-refreshes on 401."""
-    token = _load_token()
+    token = _get_token()
     headers = {"Authorization": f"Bearer {token['access_token']}"}
     url = f"{cfg.BASE_URL}{endpoint}"
 

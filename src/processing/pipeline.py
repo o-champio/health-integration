@@ -14,6 +14,7 @@ load_glucose_only()
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -61,8 +62,21 @@ def _date_chunks(start: str, end: str, max_days: int = _OURA_MAX_DAYS):
         s = chunk_end + timedelta(days=1)
 
 
+def _fetch_one(fn, start_date: str, end_date: str) -> pd.DataFrame:
+    """Fetch a single Oura daily metric across all date chunks."""
+    chunks = []
+    for cs, ce in _date_chunks(start_date, end_date):
+        try:
+            df = fn(cs, ce)
+            if not df.empty:
+                chunks.append(df)
+        except Exception as exc:
+            log.warning("%s (%s..%s): %s", fn.__name__, cs, ce, exc)
+    return pd.concat(chunks, ignore_index=True) if chunks else pd.DataFrame()
+
+
 def _fetch_oura_daily(start_date: str, end_date: str) -> pd.DataFrame:
-    """Fetch all Oura daily metrics, chunking large date ranges."""
+    """Fetch all Oura daily metrics in parallel, chunking large date ranges."""
     fetchers = [
         oura_client.get_daily_sleep,
         oura_client.get_daily_readiness,
@@ -71,17 +85,12 @@ def _fetch_oura_daily(start_date: str, end_date: str) -> pd.DataFrame:
     ]
 
     all_frames: list[pd.DataFrame] = []
-    for fn in fetchers:
-        chunks = []
-        for cs, ce in _date_chunks(start_date, end_date):
-            try:
-                df = fn(cs, ce)
-                if not df.empty:
-                    chunks.append(df)
-            except Exception as exc:
-                log.warning("%s (%s..%s): %s", fn.__name__, cs, ce, exc)
-        if chunks:
-            all_frames.append(pd.concat(chunks, ignore_index=True))
+    with ThreadPoolExecutor(max_workers=len(fetchers)) as pool:
+        futures = {pool.submit(_fetch_one, fn, start_date, end_date): fn for fn in fetchers}
+        for future in as_completed(futures):
+            df = future.result()
+            if not df.empty:
+                all_frames.append(df)
 
     if not all_frames:
         return pd.DataFrame()
@@ -95,28 +104,24 @@ def _fetch_oura_daily(start_date: str, end_date: str) -> pd.DataFrame:
 
 # -- Feature engineering -------------------------------------------------------
 
-def _add_lag_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Add previous-night lag columns for sleep and readiness scores.
+def _add_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Add lag and rolling glucose variability features in a single pass.
 
-    Effects of poor sleep / low HRV are typically observed the following day.
+    - Lag features: sleep/readiness scores shifted 1 day (next-day glucose impact).
+    - Rolling variability: 7-day rolling mean/std of glucose.
     """
-    lag_cols = [c for c in df.columns if c.startswith(("sleep_score", "readiness_score"))]
-    if not lag_cols:
-        return df
     df = df.sort_values("date").copy()
+
+    lag_cols = [c for c in df.columns if c.startswith(("sleep_score", "readiness_score"))]
     for col in lag_cols:
         df[f"{col}_prev_night"] = df[col].shift(1)
-    log.debug("Added %d lag features.", len(lag_cols))
-    return df
+    if lag_cols:
+        log.debug("Added %d lag features.", len(lag_cols))
 
+    if "glucose_mean" in df.columns and len(df) >= 3:
+        df["glucose_mean_7d"] = df["glucose_mean"].rolling(7, min_periods=3).mean().round(2)
+        df["glucose_std_7d"] = df["glucose_mean"].rolling(7, min_periods=3).std().round(2)
 
-def _add_glucose_variability(df: pd.DataFrame) -> pd.DataFrame:
-    """Add rolling glucose variability features over a 7-day window."""
-    if "glucose_mean" not in df.columns or len(df) < 3:
-        return df
-    df = df.sort_values("date").copy()
-    df["glucose_mean_7d"] = df["glucose_mean"].rolling(7, min_periods=3).mean().round(2)
-    df["glucose_std_7d"] = df["glucose_mean"].rolling(7, min_periods=3).std().round(2)
     return df
 
 
@@ -211,8 +216,7 @@ def build_daily_dataset(
                 merged = merged.drop_duplicates(subset=["date"], keep="last")
         result = merged.sort_values("date").reset_index(drop=True)
 
-    result = _add_lag_features(result)
-    result = _add_glucose_variability(result)
+    result = _add_features(result)
 
     _save_processed(result, DAILY_PARQUET)
     return result
