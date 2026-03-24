@@ -159,3 +159,6 @@ __pypackages__/
 # Legacy (kept until migration verified)
 libre_data/
 
+# Testing
+tests/
+

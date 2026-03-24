@@ -61,8 +61,71 @@ def _date_chunks(start: str, end: str, max_days: int = _OURA_MAX_DAYS):
         s = chunk_end + timedelta(days=1)
 
 
+def _fetch_sleep_sessions(start_date: str, end_date: str) -> pd.DataFrame:
+    """Fetch detailed sleep sessions and aggregate to one row per day.
+
+    Extracts actual physiological values (average_hrv in ms, deep_sleep_duration
+    in seconds, lowest_heart_rate in bpm) that the daily summaries do not provide.
+    When multiple sessions exist for one day, keeps the longest (primary) session.
+    """
+    chunks = []
+    for cs, ce in _date_chunks(start_date, end_date):
+        try:
+            df = oura_client.get_sleep_sessions(cs, ce)
+            if not df.empty:
+                chunks.append(df)
+        except Exception as exc:
+            log.warning("get_sleep_sessions (%s..%s): %s", cs, ce, exc)
+    if not chunks:
+        return pd.DataFrame()
+
+    sessions = pd.concat(chunks, ignore_index=True)
+
+    # Keep only long_sleep (primary nightly sessions)
+    if "type" in sessions.columns:
+        long = sessions[sessions["type"] == "long_sleep"]
+        if not long.empty:
+            sessions = long
+
+    # Pick the longest session per day when duplicates exist
+    if "total_sleep_duration" in sessions.columns:
+        sessions = (
+            sessions.sort_values("total_sleep_duration", ascending=False)
+            .drop_duplicates(subset=["day"], keep="first")
+        )
+
+    keep_cols = ["day"]
+    rename_map = {"day": "date"}
+    physio_cols = {
+        "average_hrv": "session_avg_hrv",
+        "average_heart_rate": "session_avg_hr",
+        "lowest_heart_rate": "session_lowest_hr",
+        "deep_sleep_duration": "session_deep_sleep_sec",
+        "rem_sleep_duration": "session_rem_sleep_sec",
+        "total_sleep_duration": "session_total_sleep_sec",
+        "efficiency": "session_efficiency",
+        "restless_periods": "session_restless_periods",
+    }
+    for src, dst in physio_cols.items():
+        if src in sessions.columns:
+            keep_cols.append(src)
+            rename_map[src] = dst
+
+    result = sessions[keep_cols].rename(columns=rename_map).copy()
+    result["date"] = pd.to_datetime(result["date"]).dt.normalize()
+
+    # Convert durations from seconds to minutes for readability
+    for col in ["session_deep_sleep_sec", "session_rem_sleep_sec", "session_total_sleep_sec"]:
+        min_col = col.replace("_sec", "_min")
+        if col in result.columns:
+            result[min_col] = (result[col] / 60).round(1)
+            result = result.drop(columns=[col])
+
+    return result.sort_values("date").reset_index(drop=True)
+
+
 def _fetch_oura_daily(start_date: str, end_date: str) -> pd.DataFrame:
-    """Fetch all Oura daily metrics, chunking large date ranges."""
+    """Fetch all Oura daily metrics + sleep sessions, chunking large date ranges."""
     fetchers = [
         oura_client.get_daily_sleep,
         oura_client.get_daily_readiness,
@@ -82,6 +145,11 @@ def _fetch_oura_daily(start_date: str, end_date: str) -> pd.DataFrame:
                 log.warning("%s (%s..%s): %s", fn.__name__, cs, ce, exc)
         if chunks:
             all_frames.append(pd.concat(chunks, ignore_index=True))
+
+    # Also fetch detailed sleep sessions for physiological values
+    sessions_df = _fetch_sleep_sessions(start_date, end_date)
+    if not sessions_df.empty:
+        all_frames.append(sessions_df)
 
     if not all_frames:
         return pd.DataFrame()
