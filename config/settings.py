@@ -1,7 +1,9 @@
 """Central configuration: paths, API endpoints, scopes, and credentials.
 
 Credentials are loaded from environment variables first, falling back
-to config/credentials.py for local development.
+to config/credentials.py for local development.  A .env file in the
+project root is also supported (requires python-dotenv; silently skipped
+when the package is absent).
 """
 from __future__ import annotations
 
@@ -9,18 +11,37 @@ import logging
 import os
 from pathlib import Path
 
+# Load .env if present (optional; silently ignored when python-dotenv not installed)
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+except ImportError:
+    pass
+
 log = logging.getLogger(__name__)
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-DATA_RAW_DIR = PROJECT_ROOT / "data" / "raw"
+DATA_RAW_DIR      = PROJECT_ROOT / "data" / "raw"
 DATA_PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
-TOKEN_DIR = PROJECT_ROOT / "auth" / "tokens"
-TOKEN_FILE = str(TOKEN_DIR / "oura_token.json")
+TOKEN_DIR         = PROJECT_ROOT / "auth" / "tokens"
+TOKEN_FILE        = str(TOKEN_DIR / "oura_token.json")
 
-# ── Credentials ──────────────────────────────────────────────────────────────
+# ── Parquet storage ───────────────────────────────────────────────────────────
+# glucose_readings.parquet  — unified raw readings (Libre + Dexcom), 'source' col
+# daily_merged.parquet      — one row per day: glucose daily stats + Oura metrics
+
+GLUCOSE_PARQUET = DATA_PROCESSED_DIR / "glucose_readings.parquet"
+LAST_SYNC_FILE  = DATA_PROCESSED_DIR / ".last_sync"
+
+# ── CGM source cutover ────────────────────────────────────────────────────────
+# FreeStyle LibreLink → Dexcom G7 on this date.
+# LibreLink CSVs are the source of truth before this date; Dexcom API after.
+CUTOVER_DATE = "2026-03-28"
+
+# ── Oura credentials ──────────────────────────────────────────────────────────
 # Prefer env vars; fall back to config/credentials.py for local dev.
 
 def _load_credentials() -> tuple[str, str]:
@@ -72,9 +93,12 @@ DEXCOM_CLIENT_ID, DEXCOM_CLIENT_SECRET, DEXCOM_SANDBOX = _load_dexcom_credential
 # ── Oura API ─────────────────────────────────────────────────────────────────
 
 OURA_REDIRECT_URL = "http://localhost:8080"
-AUTH_URL = "https://cloud.ouraring.com/oauth/authorize"
+AUTH_URL  = "https://cloud.ouraring.com/oauth/authorize"
 TOKEN_URL = "https://api.ouraring.com/oauth/token"
-BASE_URL = "https://api.ouraring.com/v2/usercollection/"
+BASE_URL  = "https://api.ouraring.com/v2/usercollection/"
+
+# Ring was first worn in December 2025. API calls will never go before this date.
+OURA_START_DATE = "2025-12-01"
 
 SCOPES = [
     "daily",      # Readiness and sleep summaries
@@ -86,18 +110,18 @@ SCOPES = [
 
 # ── Dexcom API ───────────────────────────────────────────────────────────────
 
-DEXCOM_TOKEN_FILE = str(TOKEN_DIR / "dexcom_token.json")
+DEXCOM_TOKEN_FILE   = str(TOKEN_DIR / "dexcom_token.json")
 DEXCOM_REDIRECT_URL = "http://localhost:8080"
 
-_DEXCOM_BASE = "https://sandbox-api.dexcom.com" if DEXCOM_SANDBOX else "https://api.dexcom.com"
-DEXCOM_AUTH_URL = f"{_DEXCOM_BASE}/v2/oauth2/login"
+_DEXCOM_BASE     = "https://sandbox-api.dexcom.com" if DEXCOM_SANDBOX else "https://api.dexcom.com"
+DEXCOM_AUTH_URL  = f"{_DEXCOM_BASE}/v2/oauth2/login"
 DEXCOM_TOKEN_URL = f"{_DEXCOM_BASE}/v2/oauth2/token"
-DEXCOM_BASE_URL = f"{_DEXCOM_BASE}/v3/"
-DEXCOM_SCOPES = ["offline_access"]
+DEXCOM_BASE_URL  = f"{_DEXCOM_BASE}/v3/"
+DEXCOM_SCOPES    = ["offline_access"]
 
 # ── Glucose thresholds (mg/dL) ───────────────────────────────────────────────
 
-GLUCOSE_LOW = 70
+GLUCOSE_LOW  = 70
 GLUCOSE_HIGH = 180
 
 # ── Timezone ─────────────────────────────────────────────────────────────────

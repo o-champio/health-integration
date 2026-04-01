@@ -13,7 +13,9 @@ load_glucose_only()
 """
 from __future__ import annotations
 
+import contextlib
 import logging
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -23,6 +25,14 @@ from config import settings as cfg
 from src.api import libre_client, oura_client
 
 log = logging.getLogger(__name__)
+
+
+@contextlib.contextmanager
+def _timed(label: str):
+    """Log elapsed time for a pipeline stage at INFO level with a [PERF] prefix."""
+    t0 = time.perf_counter()
+    yield
+    log.info("[PERF] %-45s %.3fs", label, time.perf_counter() - t0)
 
 # Oura API rejects queries spanning more than ~30 days
 _OURA_MAX_DAYS = 30
@@ -39,9 +49,11 @@ def load_glucose_only(
     """
     if data_dir is None:
         data_dir = cfg.DATA_RAW_DIR
-    raw = libre_client.load_all(data_dir)
+    with _timed("CSV load (load_all)"):
+        raw = libre_client.load_all(data_dir)
     glucose = libre_client.get_glucose_readings(raw)
-    daily = libre_client.daily_glucose_stats(glucose)
+    with _timed("CSV stats (daily_glucose_stats)"):
+        daily = libre_client.daily_glucose_stats(glucose)
     log.info(
         "Loaded %d glucose readings across %d days.",
         len(glucose), len(daily),
@@ -71,7 +83,8 @@ def _fetch_sleep_sessions(start_date: str, end_date: str) -> pd.DataFrame:
     chunks = []
     for cs, ce in _date_chunks(start_date, end_date):
         try:
-            df = oura_client.get_sleep_sessions(cs, ce)
+            with _timed(f"Oura sleep_sessions {cs}..{ce}"):
+                df = oura_client.get_sleep_sessions(cs, ce)
             if not df.empty:
                 chunks.append(df)
         except Exception as exc:
@@ -138,7 +151,8 @@ def _fetch_oura_daily(start_date: str, end_date: str) -> pd.DataFrame:
         chunks = []
         for cs, ce in _date_chunks(start_date, end_date):
             try:
-                df = fn(cs, ce)
+                with _timed(f"Oura {fn.__name__} {cs}..{ce}"):
+                    df = fn(cs, ce)
                 if not df.empty:
                     chunks.append(df)
             except Exception as exc:
@@ -193,7 +207,8 @@ def _add_glucose_variability(df: pd.DataFrame) -> pd.DataFrame:
 def _load_existing(path: Path) -> pd.DataFrame | None:
     """Load an existing processed parquet file, if it exists."""
     if path.exists():
-        df = pd.read_parquet(path)
+        with _timed(f"Load existing parquet ({path.name})"):
+            df = pd.read_parquet(path)
         log.info("Loaded existing processed data: %d rows from %s", len(df), path.name)
         return df
     return None
@@ -241,8 +256,9 @@ def build_daily_dataset(
         & (daily_glucose["date"] <= pd.Timestamp(end_date))
     ].copy()
 
-    # Determine effective start_date for Oura fetch (incremental)
-    oura_start = start_date
+    # Determine effective start_date for Oura fetch (incremental).
+    # Never fetch before OURA_START_DATE — ring wasn't worn before that.
+    oura_start = max(start_date, cfg.OURA_START_DATE)
     existing = _load_existing(DAILY_PARQUET) if incremental else None
     if existing is not None and "date" in existing.columns:
         last_date = pd.Timestamp(existing["date"].max())
@@ -254,35 +270,44 @@ def build_daily_dataset(
             log.info("Processed data is up to date through %s.", last_date.strftime("%Y-%m-%d"))
 
     try:
-        oura_df = _fetch_oura_daily(oura_start, end_date)
+        with _timed("Oura full fetch"):
+            oura_df = _fetch_oura_daily(oura_start, end_date)
     except Exception as exc:
-        log.error("Oura API unavailable (%s). Returning glucose-only dataset.", exc)
-        return daily_glucose.sort_values("date").reset_index(drop=True)
+        log.error("Oura API unavailable (%s). Using cached Oura data.", exc)
+        oura_df = pd.DataFrame()
 
-    if oura_df.empty and existing is None:
-        result = daily_glucose.sort_values("date").reset_index(drop=True)
-    elif oura_df.empty:
-        merged = pd.merge(daily_glucose, existing, on="date", how="left", suffixes=("", "_dup"))
-        dup_cols = [c for c in merged.columns if c.endswith("_dup")]
-        merged = merged.drop(columns=dup_cols)
-        result = merged.sort_values("date").reset_index(drop=True)
-    else:
-        merged = pd.merge(daily_glucose, oura_df, on="date", how="left")
+    with _timed("Merge glucose + Oura"):
+        # Step 1: merge fresh glucose with new Oura data (may be empty)
+        if oura_df.empty:
+            result = daily_glucose.copy()
+        else:
+            result = pd.merge(daily_glucose, oura_df, on="date", how="left")
+
+        # Step 2: backfill Oura columns from existing parquet where the
+        # new merge has gaps (old dates, or API failure).  Glucose columns
+        # are always taken from the fresh CSV and never overwritten.
         if existing is not None:
-            # Combine: keep existing rows for dates not in the new fetch
-            oura_cols = [c for c in oura_df.columns if c != "date"]
-            existing_only = existing[
-                existing["date"] < pd.Timestamp(oura_start)
-            ]
-            if not existing_only.empty:
-                merged = pd.concat([existing_only, merged], ignore_index=True)
-                merged = merged.drop_duplicates(subset=["date"], keep="last")
-        result = merged.sort_values("date").reset_index(drop=True)
+            glucose_col_set = set(daily_glucose.columns)
+            existing_indexed = existing.set_index("date")
+            for col in existing_indexed.columns:
+                if col in glucose_col_set:
+                    continue
+                if col not in result.columns:
+                    result[col] = pd.NA
+                mask = result[col].isna()
+                if mask.any():
+                    result.loc[mask, col] = (
+                        result.loc[mask, "date"].map(existing_indexed[col])
+                    )
 
-    result = _add_lag_features(result)
-    result = _add_glucose_variability(result)
+        result = result.sort_values("date").reset_index(drop=True)
 
-    _save_processed(result, DAILY_PARQUET)
+    with _timed("Lag + rolling features"):
+        result = _add_lag_features(result)
+        result = _add_glucose_variability(result)
+
+    with _timed("Save parquet"):
+        _save_processed(result, DAILY_PARQUET)
     return result
 
 

@@ -145,6 +145,8 @@ cython_debug/
 # OS
 .DS_Store
 Thumbs.db
+.claude
+CLAUDE.md
 
 # Packaging
 .pypirc
@@ -154,11 +156,12 @@ __pypackages__/
 .pixi
 
 # Agents
-.claude/
+.claude/CLAUDE.md
+
 
 # Legacy (kept until migration verified)
 libre_data/
 
 # Testing
-tests/
+# tests/ — tracked; test suite is version-controlled
 

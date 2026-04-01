@@ -18,7 +18,9 @@ Lag logic
 """
 from __future__ import annotations
 
+import contextlib
 import logging
+import time
 
 import numpy as np
 import pandas as pd
@@ -26,6 +28,14 @@ import pandas as pd
 from config import settings as cfg
 
 log = logging.getLogger(__name__)
+
+
+@contextlib.contextmanager
+def _timed(label: str):
+    """Log elapsed time for a feature-engineering stage at INFO level with a [PERF] prefix."""
+    t0 = time.perf_counter()
+    yield
+    log.info("[PERF] %-45s %.3fs", label, time.perf_counter() - t0)
 
 
 # -- Column discovery helpers --------------------------------------------------
@@ -79,10 +89,15 @@ def build_analysis_df(daily: pd.DataFrame) -> pd.DataFrame:
 
     df = df.sort_values("date").reset_index(drop=True)
 
-    df = _add_sleep_night_lags(df)
-    df = _add_prev_day_lags(df)
-    df = _add_rolling_glucose(df)
-    df = _add_derived_ratios(df)
+    with _timed("build_analysis_df total"):
+        with _timed("features: sleep night lags"):
+            df = _add_sleep_night_lags(df)
+        with _timed("features: prev-day lags"):
+            df = _add_prev_day_lags(df)
+        with _timed("features: rolling glucose"):
+            df = _add_rolling_glucose(df)
+        with _timed("features: derived ratios"):
+            df = _add_derived_ratios(df)
 
     return df
 
