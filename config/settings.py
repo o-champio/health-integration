@@ -43,6 +43,32 @@ def _load_credentials() -> tuple[str, str]:
 
 OURA_CLIENT_ID, OURA_CLIENT_SECRET = _load_credentials()
 
+
+def _load_dexcom_credentials() -> tuple[str, str, bool]:
+    client_id = os.environ.get("DEXCOM_CLIENT_ID")
+    client_secret = os.environ.get("DEXCOM_CLIENT_SECRET")
+    sandbox = os.environ.get("DEXCOM_SANDBOX", "").lower() in ("1", "true", "yes")
+
+    if client_id and client_secret:
+        return client_id, client_secret, sandbox
+
+    try:
+        from config import credentials as _c
+        return (
+            getattr(_c, "DEXCOM_CLIENT_ID", ""),
+            getattr(_c, "DEXCOM_CLIENT_SECRET", ""),
+            getattr(_c, "DEXCOM_SANDBOX", False),
+        )
+    except ImportError:
+        log.warning(
+            "Dexcom credentials not found. Set DEXCOM_CLIENT_ID / DEXCOM_CLIENT_SECRET "
+            "env vars or add them to config/credentials.py."
+        )
+        return "", "", False
+
+
+DEXCOM_CLIENT_ID, DEXCOM_CLIENT_SECRET, DEXCOM_SANDBOX = _load_dexcom_credentials()
+
 # ── Oura API ─────────────────────────────────────────────────────────────────
 
 OURA_REDIRECT_URL = "http://localhost:8080"
@@ -57,6 +83,17 @@ SCOPES = [
     "workout",    # Exercise impact on glycemia
     "tag",        # Insulin/carb annotations
 ]
+
+# ── Dexcom API ───────────────────────────────────────────────────────────────
+
+DEXCOM_TOKEN_FILE = str(TOKEN_DIR / "dexcom_token.json")
+DEXCOM_REDIRECT_URL = "http://localhost:8080"
+
+_DEXCOM_BASE = "https://sandbox-api.dexcom.com" if DEXCOM_SANDBOX else "https://api.dexcom.com"
+DEXCOM_AUTH_URL = f"{_DEXCOM_BASE}/v2/oauth2/login"
+DEXCOM_TOKEN_URL = f"{_DEXCOM_BASE}/v2/oauth2/token"
+DEXCOM_BASE_URL = f"{_DEXCOM_BASE}/v3/"
+DEXCOM_SCOPES = ["offline_access"]
 
 # ── Glucose thresholds (mg/dL) ───────────────────────────────────────────────
 
