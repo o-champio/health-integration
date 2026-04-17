@@ -43,7 +43,7 @@ def _refresh_token(token: dict) -> dict:
         data={
             "grant_type": "refresh_token",
             "refresh_token": token["refresh_token"],
-            "redirect_uri": cfg.DEXCOM_REDIRECT_URL,
+            "redirect_uri": cfg.DEXCOM_REDIRECT_URI,
             "client_id": cfg.DEXCOM_CLIENT_ID,
             "client_secret": cfg.DEXCOM_CLIENT_SECRET,
         },
@@ -106,7 +106,11 @@ class DexcomClient:
 
         df = pd.DataFrame(records)
         df = df.rename(columns={"systemTime": "timestamp", "value": "glucose_mg_dl"})
-        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert(None)
+        df["timestamp"] = (
+            pd.to_datetime(df["timestamp"], format="ISO8601", utc=True)
+            .dt.tz_convert(cfg.LOCAL_TIMEZONE)
+            .dt.tz_localize(None)
+        )
         df = df.sort_values("timestamp").reset_index(drop=True)
 
         keep = ["timestamp", "glucose_mg_dl", "trend", "trend_rate"]
