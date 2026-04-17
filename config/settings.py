@@ -92,7 +92,7 @@ DEXCOM_CLIENT_ID, DEXCOM_CLIENT_SECRET, DEXCOM_SANDBOX = _load_dexcom_credential
 
 # ── Oura API ─────────────────────────────────────────────────────────────────
 
-OURA_REDIRECT_URL = "http://localhost:8080"
+OURA_REDIRECT_URI = "http://localhost:8080"
 AUTH_URL  = "https://cloud.ouraring.com/oauth/authorize"
 TOKEN_URL = "https://api.ouraring.com/oauth/token"
 BASE_URL  = "https://api.ouraring.com/v2/usercollection/"
@@ -111,7 +111,7 @@ SCOPES = [
 # ── Dexcom API ───────────────────────────────────────────────────────────────
 
 DEXCOM_TOKEN_FILE   = str(TOKEN_DIR / "dexcom_token.json")
-DEXCOM_REDIRECT_URL = "http://localhost:8080"
+DEXCOM_REDIRECT_URI = "http://localhost:8080"
 
 _DEXCOM_BASE     = "https://sandbox-api.dexcom.com" if DEXCOM_SANDBOX else "https://api.dexcom.com"
 DEXCOM_AUTH_URL  = f"{_DEXCOM_BASE}/v2/oauth2/login"

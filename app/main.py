@@ -23,7 +23,12 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from src.models.analysis import correlation_matrix, dual_correlation, run_multi_target_regression
 from src.processing.features import build_analysis_df, get_feature_columns
-from src.processing.pipeline import build_daily_dataset, load_glucose_only
+from src.processing.pipeline import sync_all
+from src.processing.workout_glucose import (
+    build_workout_glucose_df,
+    glucose_response_curve,
+    workout_summary_by_type,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -334,15 +339,26 @@ def _label(col: str) -> str:
 
 # ── Data loading ──────────────────────────────────────────────────────────────
 
-@st.cache_data(ttl=43200, show_spinner="Syncing data from Oura API and LibreLink…")
-def _load_analysis() -> pd.DataFrame:
-    return build_analysis_df(build_daily_dataset(incremental=True))
+@st.cache_data(ttl=3600, show_spinner="Syncing all data…")
+def _sync_all() -> dict[str, pd.DataFrame]:
+    """Single incremental sync — glucose, daily, workouts, high-freq.
+
+    TTL=1h since incremental sync is fast (~4s when cached).
+    Use the 'Sync now' sidebar button to force a refresh.
+    """
+    return sync_all()
 
 
-@st.cache_data(ttl=43200, show_spinner="Loading glucose readings…")
-def _load_raw_glucose() -> pd.DataFrame:
-    glucose, _ = load_glucose_only()
-    return glucose
+def _load_analysis(synced: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    return build_analysis_df(synced["daily"])
+
+
+def _load_raw_glucose(synced: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    return synced["glucose"]
+
+
+def _load_workouts_from_sync(synced: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    return synced["workouts"]
 
 
 @st.cache_data(ttl=43200)
@@ -388,9 +404,15 @@ def _load_events() -> pd.DataFrame:
         return pd.DataFrame(columns=["timestamp", "event_type", "value"])
 
 
-def _load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
+def _load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Sync all pipelines once and return (analysis_df, raw_glucose, workouts)."""
     try:
-        return _load_analysis(), _load_raw_glucose()
+        synced = _sync_all()
+        return (
+            _load_analysis(synced),
+            _load_raw_glucose(synced),
+            _load_workouts_from_sync(synced),
+        )
     except FileNotFoundError as exc:
         st.error(f"Data not found: {exc}")
         st.stop()
@@ -416,7 +438,7 @@ def _sidebar(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
 
     page = st.sidebar.radio(
         "Navigate",
-        ["Overview", "Glucose Deep Dive", "Lifestyle Factors", "Correlation Explorer", "Regression & Insights"],
+        ["Overview", "Glucose Deep Dive", "Lifestyle Factors", "Workout Analysis", "Correlation Explorer", "Regression & Insights"],
         label_visibility="collapsed",
     )
     st.sidebar.markdown("---")
@@ -1259,7 +1281,7 @@ def _corr_heatmap(df: pd.DataFrame) -> None:
 
 def _page_regression(df: pd.DataFrame) -> None:
     st.markdown("## Regression & Insights")
-    st.caption("OLS with z-score standardized features — coefficients are directly comparable across predictors.")
+    st.caption("Ridge regression (RidgeCV, 5-fold CV) with z-score standardized features — coefficients are directly comparable across predictors.")
 
     groups = get_feature_columns(df)
     all_features = (
@@ -1309,10 +1331,11 @@ def _page_regression(df: pd.DataFrame) -> None:
     for target_name, res in results.items():
         st.markdown(f"### Target: {_label(target_name)}")
 
-        c1, c2, c3 = st.columns(3)
+        c1, c2, c3, c4 = st.columns(4)
         c1.metric("R²", f"{res.r_squared:.3f}")
         c2.metric("Adj. R²", f"{res.r_squared_adj:.3f}")
         c3.metric("Observations", res.n_observations)
+        c4.metric("Ridge α", res.alpha)
 
         if not res.feature_importance.empty:
             imp = res.feature_importance.copy()
@@ -1339,16 +1362,253 @@ def _page_regression(df: pd.DataFrame) -> None:
 
         with st.expander("Detailed coefficients"):
             disp = res.feature_importance[
-                ["feature", "std_coefficient", "raw_coefficient", "p_value", "significant"]
+                ["feature", "std_coefficient", "raw_coefficient"]
             ].copy()
             disp["feature"] = disp["feature"].apply(_label)
-            disp.columns = ["Feature", "Std β", "Raw β", "p-value", "Sig."]
+            disp.columns = ["Feature", "Std β", "Raw β"]
             st.dataframe(disp, use_container_width=True, hide_index=True)
 
-        with st.expander("Full OLS summary"):
-            st.code(res.summary_text, language="text")
-
         st.markdown("---")
+
+
+# ── Workout Analysis ──────────────────────────────────────────────────────────
+
+def _page_workout_analysis(
+    df: pd.DataFrame,
+    raw_glucose: pd.DataFrame,
+    workouts: pd.DataFrame,
+) -> None:
+    st.markdown("## Workout Analysis")
+    st.caption("Glucose response before, during, and after exercise — by activity type.")
+
+    if workouts.empty:
+        st.warning("No workout data available. Ensure your Oura token is configured.")
+        return
+
+    raw = _filter_raw(raw_glucose, df)
+    if raw.empty:
+        st.warning("No glucose data in the selected date range.")
+        return
+
+    wg = build_workout_glucose_df(raw, workouts)
+    if wg.empty:
+        st.info("No workouts with overlapping glucose data found in the selected range.")
+        return
+
+    summary = workout_summary_by_type(wg)
+    curve = glucose_response_curve(raw, workouts)
+
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "Workout Profiles", "Glucose Response Curve", "Delta Analysis", "Nadir & Timing",
+    ])
+
+    # ── Tab 1: Workout Profiles ──────────────────────────────────────────────
+
+    with tab1:
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Workouts", len(wg))
+        c2.metric("Activity Types", wg["activity"].nunique())
+        c3.metric("Avg Duration", f"{wg['duration_min'].mean():.0f} min")
+        avg_delta = wg["delta_during"].mean()
+        c4.metric("Avg Glucose Change", f"{avg_delta:+.0f} mg/dL" if pd.notna(avg_delta) else "—")
+
+        if not summary.empty:
+            st.markdown("#### Summary by Activity Type")
+            disp_summary = summary.rename(columns={
+                "activity": "Activity", "workouts": "N", "avg_duration": "Avg Duration (min)",
+                "avg_calories": "Avg Calories", "avg_pre": "Avg Pre",
+                "avg_delta_during": "Avg Δ During", "avg_delta_post": "Avg Δ Post (1h)",
+                "avg_nadir": "Avg Nadir", "avg_nadir_time": "Avg Nadir (min after)",
+            })
+            st.dataframe(disp_summary, use_container_width=True, hide_index=True)
+
+        st.markdown("#### All Workouts")
+        disp_wg = wg[[
+            "activity", "day", "time_of_day", "duration_min", "calories",
+            "pre_avg", "during_avg", "post_60_avg", "delta_during", "delta_post",
+            "nadir_post_120", "nadir_time_min",
+        ]].copy()
+        disp_wg.columns = [
+            "Activity", "Date", "Time of Day", "Duration (min)", "Calories",
+            "Pre Avg", "During Avg", "Post 1h Avg", "Δ During", "Δ Post 1h",
+            "Nadir (2h)", "Nadir (min after)",
+        ]
+        st.dataframe(disp_wg, use_container_width=True, hide_index=True)
+
+    # ── Tab 2: Glucose Response Curve ────────────────────────────────────────
+
+    with tab2:
+        if curve.empty:
+            st.info("Not enough glucose readings around workouts to plot a curve.")
+        else:
+            # Average curve per activity type
+            avg_curve = (
+                curve.groupby(["activity", "relative_min"])["glucose_delta"]
+                .mean()
+                .reset_index()
+            )
+
+            fig = go.Figure()
+            colors = [C["chart1"], C["chart2"], C["chart3"], C["danger"], C["warning"]]
+            for i, act in enumerate(avg_curve["activity"].unique()):
+                act_data = avg_curve[avg_curve["activity"] == act]
+                n_workouts = curve[curve["activity"] == act]["workout_idx"].nunique()
+                fig.add_trace(go.Scatter(
+                    x=act_data["relative_min"],
+                    y=act_data["glucose_delta"],
+                    mode="lines+markers",
+                    name=f"{act} (n={n_workouts})",
+                    line=dict(color=colors[i % len(colors)], width=2.5),
+                    marker=dict(size=4),
+                ))
+
+            fig.add_vline(x=0, line_dash="dash", line_color=C["text_muted"], annotation_text="Start")
+            fig.add_hline(y=0, line_dash="dot", line_color=C["border"])
+            fig.update_layout(
+                xaxis_title="Minutes relative to workout start",
+                yaxis_title="Glucose change from baseline (mg/dL)",
+                height=450,
+                margin=dict(t=30, b=30),
+            )
+            st.plotly_chart(fig, use_container_width=True, key="workout_response_curve")
+
+            # Individual traces (faded) per activity
+            with st.expander("Individual workout traces"):
+                fig2 = go.Figure()
+                for act in curve["activity"].unique():
+                    act_data = curve[curve["activity"] == act]
+                    for widx in act_data["workout_idx"].unique():
+                        trace = act_data[act_data["workout_idx"] == widx]
+                        fig2.add_trace(go.Scatter(
+                            x=trace["relative_min"],
+                            y=trace["glucose_delta"],
+                            mode="lines",
+                            name=f"{act} #{widx}",
+                            opacity=0.4,
+                            showlegend=False,
+                        ))
+                fig2.add_vline(x=0, line_dash="dash", line_color=C["text_muted"])
+                fig2.add_hline(y=0, line_dash="dot", line_color=C["border"])
+                fig2.update_layout(
+                    xaxis_title="Minutes relative to workout start",
+                    yaxis_title="Glucose change (mg/dL)",
+                    height=400,
+                    margin=dict(t=20, b=20),
+                )
+                st.plotly_chart(fig2, use_container_width=True, key="workout_individual_traces")
+
+    # ── Tab 3: Delta Analysis ────────────────────────────────────────────────
+
+    with tab3:
+        if not summary.empty:
+            st.markdown("#### Glucose Change by Activity Type")
+            fig = go.Figure()
+            fig.add_trace(go.Bar(
+                x=summary["activity"],
+                y=summary["avg_delta_during"],
+                name="During workout",
+                marker_color=C["chart1"],
+                text=summary["avg_delta_during"].apply(lambda v: f"{v:+.0f}" if pd.notna(v) else ""),
+                textposition="outside",
+            ))
+            fig.add_trace(go.Bar(
+                x=summary["activity"],
+                y=summary["avg_delta_post"],
+                name="1h post workout",
+                marker_color=C["chart2"],
+                text=summary["avg_delta_post"].apply(lambda v: f"{v:+.0f}" if pd.notna(v) else ""),
+                textposition="outside",
+            ))
+            fig.update_layout(
+                barmode="group",
+                yaxis_title="Avg glucose change (mg/dL)",
+                height=380,
+                margin=dict(t=30, b=30),
+            )
+            st.plotly_chart(fig, use_container_width=True, key="workout_deltas_type")
+
+        # Time of day comparison
+        tod_agg = wg.groupby("time_of_day").agg(
+            n=("activity", "size"),
+            avg_delta_during=("delta_during", "mean"),
+            avg_delta_post=("delta_post", "mean"),
+        ).round(1).reset_index()
+        if len(tod_agg) > 1:
+            st.markdown("#### Glucose Change by Time of Day")
+            fig = go.Figure()
+            fig.add_trace(go.Bar(
+                x=tod_agg["time_of_day"],
+                y=tod_agg["avg_delta_during"],
+                name="During workout",
+                marker_color=C["chart1"],
+                text=[f"n={n}" for n in tod_agg["n"]],
+                textposition="outside",
+            ))
+            fig.add_trace(go.Bar(
+                x=tod_agg["time_of_day"],
+                y=tod_agg["avg_delta_post"],
+                name="1h post workout",
+                marker_color=C["chart2"],
+            ))
+            fig.update_layout(
+                barmode="group",
+                yaxis_title="Avg glucose change (mg/dL)",
+                height=350,
+                margin=dict(t=30, b=30),
+            )
+            st.plotly_chart(fig, use_container_width=True, key="workout_deltas_tod")
+
+    # ── Tab 4: Nadir & Timing ────────────────────────────────────────────────
+
+    with tab4:
+        nadir_data = wg.dropna(subset=["nadir_post_120"])
+        if nadir_data.empty:
+            st.info("No nadir data available (need glucose readings in the 2h post-workout).")
+        else:
+            st.markdown("#### Post-Workout Glucose Nadir")
+            st.caption("Lowest glucose reading within 2 hours after each workout ends.")
+
+            c1, c2 = st.columns(2)
+            c1.metric("Avg Nadir", f"{nadir_data['nadir_post_120'].mean():.0f} mg/dL")
+            c2.metric("Avg Time to Nadir", f"{nadir_data['nadir_time_min'].mean():.0f} min")
+
+            fig = go.Figure()
+            colors = [C["chart1"], C["chart2"], C["chart3"], C["danger"], C["warning"]]
+            for i, act in enumerate(nadir_data["activity"].unique()):
+                act_d = nadir_data[nadir_data["activity"] == act]
+                fig.add_trace(go.Scatter(
+                    x=act_d["nadir_time_min"],
+                    y=act_d["nadir_post_120"],
+                    mode="markers+text",
+                    name=act,
+                    marker=dict(color=colors[i % len(colors)], size=10),
+                    text=act_d["time_of_day"],
+                    textposition="top center",
+                    textfont=dict(size=10, color=C["text_sec"]),
+                ))
+
+            fig.add_hline(
+                y=70, line_dash="dash", line_color=C["danger"],
+                annotation_text="Hypo threshold (70)",
+                annotation_font_color=C["danger"],
+            )
+            fig.update_layout(
+                xaxis_title="Minutes after workout end",
+                yaxis_title="Nadir glucose (mg/dL)",
+                height=400,
+                margin=dict(t=30, b=30),
+            )
+            st.plotly_chart(fig, use_container_width=True, key="workout_nadir_scatter")
+
+            # Per-type nadir summary table
+            nadir_summary = nadir_data.groupby("activity").agg(
+                n=("activity", "size"),
+                avg_nadir=("nadir_post_120", "mean"),
+                min_nadir=("nadir_post_120", "min"),
+                avg_time=("nadir_time_min", "mean"),
+            ).round(1).reset_index()
+            nadir_summary.columns = ["Activity", "N", "Avg Nadir", "Lowest Nadir", "Avg Time (min)"]
+            st.dataframe(nadir_summary, use_container_width=True, hide_index=True)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -1362,7 +1622,12 @@ def main() -> None:
     )
     st.markdown(_CSS, unsafe_allow_html=True)
 
-    df, raw_glucose = _load_data()
+    if st.sidebar.button("Sync now"):
+        _sync_all.clear()
+        _load_events.clear()
+        st.rerun()
+
+    df, raw_glucose, workouts = _load_data()
     events = _load_events()
     filtered, page = _sidebar(df)
 
@@ -1378,6 +1643,8 @@ def main() -> None:
         _page_lifestyle(filtered)
     elif page == "Correlation Explorer":
         _page_correlations(filtered)
+    elif page == "Workout Analysis":
+        _page_workout_analysis(filtered, raw_glucose, workouts)
     elif page == "Regression & Insights":
         _page_regression(filtered)
 

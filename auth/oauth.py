@@ -41,7 +41,7 @@ def _exchange_code_oura(code: str) -> dict:
         data={
             "grant_type": "authorization_code",
             "code": code,
-            "redirect_uri": cfg.OURA_REDIRECT_URL,
+            "redirect_uri": cfg.OURA_REDIRECT_URI,
             "client_id": cfg.OURA_CLIENT_ID,
             "client_secret": cfg.OURA_CLIENT_SECRET,
         },
@@ -59,7 +59,7 @@ def run_oura_oauth_flow() -> dict:
     oura = OAuth2Session(
         cfg.OURA_CLIENT_ID,
         scope=cfg.SCOPES,
-        redirect_uri=cfg.OURA_REDIRECT_URL,
+        redirect_uri=cfg.OURA_REDIRECT_URI,
     )
     authorization_url, _ = oura.authorization_url(cfg.AUTH_URL)
 
@@ -100,7 +100,7 @@ def _exchange_code_dexcom(code: str) -> dict:
         data={
             "grant_type": "authorization_code",
             "code": code,
-            "redirect_uri": cfg.DEXCOM_REDIRECT_URL,
+            "redirect_uri": cfg.DEXCOM_REDIRECT_URI,
             "client_id": cfg.DEXCOM_CLIENT_ID,
             "client_secret": cfg.DEXCOM_CLIENT_SECRET,
         },
@@ -127,7 +127,7 @@ def run_dexcom_oauth_flow() -> dict:
     dexcom = OAuth2Session(
         cfg.DEXCOM_CLIENT_ID,
         scope=cfg.DEXCOM_SCOPES,
-        redirect_uri=cfg.DEXCOM_REDIRECT_URL,
+        redirect_uri=cfg.DEXCOM_REDIRECT_URI,
     )
     authorization_url, _ = dexcom.authorization_url(cfg.DEXCOM_AUTH_URL)
 
