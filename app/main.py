@@ -363,45 +363,71 @@ def _load_workouts_from_sync(synced: dict[str, pd.DataFrame]) -> pd.DataFrame:
 
 @st.cache_data(ttl=43200)
 def _load_events() -> pd.DataFrame:
-    """Load insulin and food events from LibreLink CSVs.
+    """Load insulin, food, and exercise events from LibreLink CSVs + Dexcom API.
 
     Returns DataFrame with columns: timestamp, event_type, value
-      event_type: 'insulin_rapid' | 'insulin_long' | 'food'
-      value: units (insulin) or grams (food), NaN when not logged
+      event_type: 'insulin_rapid' | 'insulin_long' | 'food' | 'exercise'
+      value: units (insulin), grams (food), minutes (exercise), NaN when not logged
 
-    When Dexcom API or dedicated meal-logging is integrated, replace this
-    loader while keeping the same output schema so downstream charts don't break.
+    Both sources are concatenated and de-duplicated by (timestamp, event_type).
     """
+    frames: list[pd.DataFrame] = []
+
+    # LibreLink CSV events.
+    # Record Type mapping in the CSV is unreliable (observed: Type 4 rows carry
+    # the Rapid-Acting Insulin column, Type 5 rows carry Carbohydrates — opposite
+    # of the official spec). Detect each event by which value column is filled.
     try:
         from src.api.libre_client import load_all
         raw = load_all()
-        frames = []
-        type_map = {3: "insulin_rapid", 4: "food", 5: "insulin_long"}
-        value_cols = {
-            3: ["Rapid-Acting Insulin (units)", "Rapid Acting Insulin (units)"],
-            4: ["Carbohydrates (grams)", "Carbs (grams)"],
-            5: ["Long-Acting Insulin Value (units)", "Long Acting Insulin (units)"],
-        }
-        for rtype, etype in type_map.items():
-            sub = raw[raw["Record Type"] == rtype].copy()
-            if sub.empty:
+
+        candidates: list[tuple[str, list[str]]] = [
+            ("insulin_rapid", ["Rapid-Acting Insulin (units)", "Rapid Acting Insulin (units)"]),
+            ("food",          ["Carbohydrates (grams)", "Carbs (grams)"]),
+            ("insulin_long",  ["Long-Acting Insulin Value (units)", "Long-Acting Insulin (units)", "Long Acting Insulin (units)"]),
+        ]
+        for etype, cols in candidates:
+            col = next((c for c in cols if c in raw.columns), None)
+            if col is None:
                 continue
-            sub = sub.rename(columns={"Device Timestamp": "timestamp"})[["timestamp"]].copy()
-            sub["event_type"] = etype
-            # Try known column names for the value; fall back to NaN
-            val = np.nan
-            for cname in value_cols.get(rtype, []):
-                if cname in raw.columns:
-                    val = pd.to_numeric(raw.loc[sub.index, cname], errors="coerce")
-                    break
-            sub["value"] = val
+            vals = pd.to_numeric(raw[col], errors="coerce")
+            mask = vals.notna() & (vals > 0)
+            if not mask.any():
+                continue
+            sub = pd.DataFrame({
+                "timestamp": raw.loc[mask, "Device Timestamp"].values,
+                "event_type": etype,
+                "value": vals[mask].values,
+            })
             frames.append(sub)
-        if not frames:
-            return pd.DataFrame(columns=["timestamp", "event_type", "value"])
-        return pd.concat(frames, ignore_index=True).sort_values("timestamp").reset_index(drop=True)
     except Exception as exc:
-        log.warning("Could not load events: %s", exc)
+        log.warning("Could not load LibreLink events: %s", exc)
+
+    # Dexcom API events — fetch from pipeline cutover through today
+    try:
+        from src.api.dexcom_client import DexcomClient
+        from config import settings as cfg
+        start = getattr(cfg, "CUTOVER_DATE", None) or date.today().replace(year=date.today().year - 1).isoformat()
+        end = date.today().isoformat()
+        dex_ev = DexcomClient().get_events(str(start), end)
+        if not dex_ev.empty:
+            frames.append(dex_ev)
+            log.info("Dexcom events: %d records fetched.", len(dex_ev))
+    except FileNotFoundError:
+        log.info("Dexcom token not found — skipping Dexcom events.")
+    except Exception as exc:
+        log.warning("Could not load Dexcom events: %s", exc)
+
+    if not frames:
         return pd.DataFrame(columns=["timestamp", "event_type", "value"])
+
+    combined = pd.concat(frames, ignore_index=True)
+    combined["timestamp"] = pd.to_datetime(combined["timestamp"], errors="coerce")
+    combined = combined.dropna(subset=["timestamp"])
+    # Dedup: same event logged in both sources within the same minute
+    combined["_ts_min"] = combined["timestamp"].dt.floor("min")
+    combined = combined.drop_duplicates(subset=["_ts_min", "event_type"]).drop(columns="_ts_min")
+    return combined.sort_values("timestamp").reset_index(drop=True)
 
 
 def _load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -433,14 +459,12 @@ def _filter_raw(raw: pd.DataFrame, df: pd.DataFrame) -> pd.DataFrame:
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 
-def _sidebar(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
-    st.sidebar.markdown("### Health Dashboard")
+def _sidebar_filters(df: pd.DataFrame) -> pd.DataFrame:
+    """Render the date-range filter + settings. Returns the filtered dataframe.
 
-    page = st.sidebar.radio(
-        "Navigate",
-        ["Overview", "Glucose Deep Dive", "Lifestyle Factors", "Workout Analysis", "Correlation Explorer", "Regression & Insights"],
-        label_visibility="collapsed",
-    )
+    Navigation (page switcher) is handled by `st.navigation` in `main()`.
+    """
+    st.sidebar.markdown("### Health Dashboard")
     st.sidebar.markdown("---")
 
     dates = pd.to_datetime(df["date"])
@@ -477,18 +501,6 @@ def _sidebar(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
 
     st.sidebar.markdown("---")
     st.sidebar.metric("Days in range", len(filtered))
-    if "glucose_tir" in filtered.columns:
-        avg_tir = filtered["glucose_tir"].mean()
-        if pd.notna(avg_tir):
-            st.sidebar.metric("Avg TIR", f"{avg_tir:.1%}")
-    if "glucose_cv" in filtered.columns:
-        avg_cv = filtered["glucose_cv"].mean()
-        if pd.notna(avg_cv):
-            st.sidebar.metric("Glucose CV", f"{avg_cv:.2f}")
-    if "prev_night_hrv" in filtered.columns:
-        avg_hrv = filtered["prev_night_hrv"].mean()
-        if pd.notna(avg_hrv):
-            st.sidebar.metric("Avg HRV", f"{avg_hrv:.0f} ms")
 
     with st.sidebar.expander("⚙ Settings"):
         st.session_state["smooth_window"] = st.slider(
@@ -500,7 +512,7 @@ def _sidebar(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
             index=0 if st.session_state.get("corr_method", "spearman") == "spearman" else 1,
         )
 
-    return filtered, page
+    return filtered
 
 
 # ── Shared chart helper ───────────────────────────────────────────────────────
@@ -568,7 +580,37 @@ def _page_overview(df: pd.DataFrame, raw_glucose: pd.DataFrame) -> None:
     c2.metric("Mean Glucose", f"{_v(latest_g, 'glucose_mean')} mg/dL")
     c3.metric("Sleep Score", _v(latest_s, "prev_night_sleep_score"))
     c4.metric("Readiness", _v(latest_r, "prev_day_readiness_score"))
-    c5.metric("HRV", f"{_v(latest_s, 'prev_night_hrv')} ms")
+    c5.metric("Activity Score", _v(latest_a, "prev_day_activity_score"))
+
+    # Period aggregates (moved from sidebar)
+    st.markdown("#### Period Averages")
+    avg_tir = df["glucose_tir"].mean() if "glucose_tir" in df.columns else np.nan
+    avg_cv = df["glucose_cv"].mean() if "glucose_cv" in df.columns else np.nan
+    avg_hrv = df["prev_night_hrv"].mean() if "prev_night_hrv" in df.columns else np.nan
+
+    def _pill(label: str, value: str, color: str) -> str:
+        return (
+            f'<div style="background:{C["card"]};border:1px solid {color};'
+            f'border-left:4px solid {color};border-radius:10px;padding:14px 18px;">'
+            f'<div style="color:{C["text_sec"]};font-size:0.72rem;text-transform:uppercase;'
+            f'letter-spacing:0.08em;margin-bottom:4px;">{label}</div>'
+            f'<div style="color:{C["text"]};font-size:1.5rem;font-weight:700;">{value}</div>'
+            f'</div>'
+        )
+
+    pc1, pc2, pc3 = st.columns(3)
+    pc1.markdown(
+        _pill("Avg TIR", f"{avg_tir:.1%}" if pd.notna(avg_tir) else "—", C["glucose"]),
+        unsafe_allow_html=True,
+    )
+    pc2.markdown(
+        _pill("Glucose CV", f"{avg_cv:.2f}" if pd.notna(avg_cv) else "—", C["chart2"]),
+        unsafe_allow_html=True,
+    )
+    pc3.markdown(
+        _pill("Avg HRV", f"{avg_hrv:.0f} ms" if pd.notna(avg_hrv) else "—", C["sleep"]),
+        unsafe_allow_html=True,
+    )
 
     st.markdown("---")
     col_l, col_r = st.columns([3, 2])
@@ -974,22 +1016,9 @@ def _glucose_insulin_meals(df: pd.DataFrame, events: pd.DataFrame) -> None:
 
     if not any_events:
         st.info(
-            "No insulin or meal events logged yet. "
-            "Start logging in FreeStyle LibreLink, or connect a dedicated meal-logging app. "
-            "Once available, this section will show:\n"
-            "- Rapid & long-acting insulin doses over time\n"
-            "- Meal timing and carb content\n"
-            "- Post-meal glucose excursions\n"
-            "- Insulin-on-board estimates\n"
-            "- Carbohydrate-to-insulin ratio analysis"
-        )
-        st.markdown("---")
-        st.markdown("##### Coming when Dexcom API is integrated")
-        st.markdown(
-            "- 5-minute glucose overlaid with insulin doses\n"
-            "- Post-meal glucose peak and time-to-peak\n"
-            "- Insulin sensitivity by time of day\n"
-            "- Overnight basal rate assessment"
+            "No insulin or meal events logged in the selected range. "
+            "Events come from LibreLink CSV exports (pre-cutover) and the Dexcom "
+            "`/events` endpoint (post-cutover)."
         )
         return
 
@@ -1053,10 +1082,6 @@ def _glucose_insulin_meals(df: pd.DataFrame, events: pd.DataFrame) -> None:
             fig2.update_layout(yaxis=dict(title="Units"), height=240)
             st.plotly_chart(fig2, use_container_width=True, key="gl_rapid_daily")
 
-    st.caption(
-        "💡 Future: once Dexcom 5-min data is available, this page will show "
-        "post-meal excursions, insulin-on-board curves, and carb ratio analysis."
-    )
 
 
 # ── Lifestyle Factors ─────────────────────────────────────────────────────────
@@ -1380,6 +1405,10 @@ def _page_workout_analysis(
 ) -> None:
     st.markdown("## Workout Analysis")
     st.caption("Glucose response before, during, and after exercise — by activity type.")
+    st.caption(
+        "💡 `unknown` = Apple Watch session pulled via Dexcom (≥25 min). "
+        "No activity type, calories, or HR available for those rows."
+    )
 
     if workouts.empty:
         st.warning("No workout data available. Ensure your Oura token is configured.")
@@ -1613,6 +1642,62 @@ def _page_workout_analysis(
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+def _get_shared_state() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Load data + apply sidebar filters once, reused by every page callable."""
+    df, raw_glucose, workouts = _load_data()
+    events = _load_events()
+    filtered = _sidebar_filters(df)
+    return filtered, df, raw_glucose, workouts, events
+
+
+def _nav_overview() -> None:
+    filtered, _df, raw_glucose, _wk, _ev = _get_shared_state()
+    if filtered.empty:
+        st.warning("No data for the selected date range.")
+        return
+    _page_overview(filtered, raw_glucose)
+
+
+def _nav_glucose() -> None:
+    filtered, _df, raw_glucose, _wk, events = _get_shared_state()
+    if filtered.empty:
+        st.warning("No data for the selected date range.")
+        return
+    _page_glucose(filtered, raw_glucose, events)
+
+
+def _nav_lifestyle() -> None:
+    filtered, *_ = _get_shared_state()
+    if filtered.empty:
+        st.warning("No data for the selected date range.")
+        return
+    _page_lifestyle(filtered)
+
+
+def _nav_workouts() -> None:
+    filtered, _df, raw_glucose, workouts, _ev = _get_shared_state()
+    if filtered.empty:
+        st.warning("No data for the selected date range.")
+        return
+    _page_workout_analysis(filtered, raw_glucose, workouts)
+
+
+def _nav_correlations() -> None:
+    filtered, *_ = _get_shared_state()
+    if filtered.empty:
+        st.warning("No data for the selected date range.")
+        return
+    _page_correlations(filtered)
+
+
+def _nav_regression() -> None:
+    filtered, *_ = _get_shared_state()
+    if filtered.empty:
+        st.warning("No data for the selected date range.")
+        return
+    _page_regression(filtered)
+
+
 def main() -> None:
     st.set_page_config(
         page_title="Health Dashboard",
@@ -1627,26 +1712,16 @@ def main() -> None:
         _load_events.clear()
         st.rerun()
 
-    df, raw_glucose, workouts = _load_data()
-    events = _load_events()
-    filtered, page = _sidebar(df)
-
-    if filtered.empty:
-        st.warning("No data for the selected date range.")
-        return
-
-    if page == "Overview":
-        _page_overview(filtered, raw_glucose)
-    elif page == "Glucose Deep Dive":
-        _page_glucose(filtered, raw_glucose, events)
-    elif page == "Lifestyle Factors":
-        _page_lifestyle(filtered)
-    elif page == "Correlation Explorer":
-        _page_correlations(filtered)
-    elif page == "Workout Analysis":
-        _page_workout_analysis(filtered, raw_glucose, workouts)
-    elif page == "Regression & Insights":
-        _page_regression(filtered)
+    pages = [
+        st.Page(_nav_overview,     title="Overview",             icon="🏠", default=True),
+        st.Page(_nav_glucose,      title="Glucose Deep Dive",    icon="🩸"),
+        st.Page(_nav_lifestyle,    title="Lifestyle Factors",    icon="🛌"),
+        st.Page(_nav_workouts,     title="Workout Analysis",     icon="🏃"),
+        st.Page(_nav_correlations, title="Correlation Explorer", icon="🔗"),
+        st.Page(_nav_regression,   title="Regression & Insights", icon="📈"),
+    ]
+    nav = st.navigation(pages, position="sidebar")
+    nav.run()
 
 
 if __name__ == "__main__":
