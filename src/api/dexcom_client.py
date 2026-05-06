@@ -10,6 +10,7 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import requests
 
@@ -119,3 +120,68 @@ class DexcomClient:
     def get_devices(self) -> list[dict]:
         """Return the list of Dexcom devices associated with the account."""
         return self._get("users/self/devices").get("devices", [])
+
+    def get_events(
+        self,
+        start_date: str,
+        end_date: str,
+    ) -> pd.DataFrame:
+        """Fetch user-logged events (carbs, insulin, exercise, health) for a date range.
+
+        Dexcom v3 /users/self/events returns records with:
+          - eventType: 'carbs' | 'insulin' | 'exercise' | 'health'
+          - eventSubType: varies by type ('fastActing'/'longActing' for insulin, etc.)
+          - value: amount (grams for carbs, units for insulin, minutes for exercise)
+          - unit: unit of `value`
+          - systemTime / displayTime: timestamps
+
+        Returns:
+            DataFrame with columns: timestamp, event_type, value, subtype
+              event_type: 'insulin_rapid' | 'insulin_long' | 'food' | 'exercise'
+              subtype: preserved Dexcom eventSubType (e.g. 'light'/'medium'/'heavy'
+                       for exercise); NaN for food/insulin.
+        """
+        start_dt = f"{start_date}T00:00:00"
+        end_dt = f"{end_date}T23:59:59"
+
+        data = self._get(
+            "users/self/events",
+            params={"startDate": start_dt, "endDate": end_dt},
+        )
+
+        records = data.get("records", [])
+        if not records:
+            log.info("No Dexcom events returned for %s – %s", start_date, end_date)
+            return pd.DataFrame(columns=["timestamp", "event_type", "value"])
+
+        df = pd.DataFrame(records)
+
+        ts_col = "systemTime" if "systemTime" in df.columns else "displayTime"
+        df["timestamp"] = (
+            pd.to_datetime(df[ts_col], format="ISO8601", utc=True)
+            .dt.tz_convert(cfg.LOCAL_TIMEZONE)
+            .dt.tz_localize(None)
+        )
+
+        def _map_type(row: pd.Series) -> str | None:
+            etype = row.get("eventType")
+            subtype = row.get("eventSubType") or ""
+            if etype == "carbs":
+                return "food"
+            if etype == "insulin":
+                return "insulin_long" if "long" in subtype.lower() else "insulin_rapid"
+            if etype == "exercise":
+                return "exercise"
+            return None
+
+        df["event_type"] = df.apply(_map_type, axis=1)
+        df = df.dropna(subset=["event_type"])
+        df["value"] = pd.to_numeric(df.get("value"), errors="coerce")
+        df["subtype"] = df.get("eventSubType")
+        df.loc[df["event_type"] != "exercise", "subtype"] = np.nan
+
+        return (
+            df[["timestamp", "event_type", "value", "subtype"]]
+            .sort_values("timestamp")
+            .reset_index(drop=True)
+        )

@@ -3,7 +3,8 @@
 Joins Oura workout timestamps with CGM readings to compute glucose
 behaviour before, during, and after each exercise session.
 
-Excluded activities: walking, houseWork (low signal-to-noise).
+Included activities: running, strengthTraining, cycling, unknown (allowlist).
+"unknown" covers Apple-Watch sessions pulled from Dexcom (no activity type).
 """
 from __future__ import annotations
 
@@ -16,9 +17,7 @@ from config import settings as cfg
 
 log = logging.getLogger(__name__)
 
-_EXCLUDE_ACTIVITIES = {"walking", "houseWork"}
-_ALWAYS_INCLUDE = {"running", "strengthTraining", "cycling"}
-_MIN_WORKOUTS_PER_TYPE = 3
+_INCLUDE_ACTIVITIES = {"running", "strengthTraining", "cycling", "unknown"}
 
 
 # -- Helpers -------------------------------------------------------------------
@@ -68,7 +67,7 @@ def build_workout_glucose_df(
     if workouts.empty or glucose.empty:
         return pd.DataFrame()
 
-    wk = workouts[~workouts["activity"].isin(_EXCLUDE_ACTIVITIES)].copy()
+    wk = workouts[workouts["activity"].isin(_INCLUDE_ACTIVITIES)].copy()
     if wk.empty:
         return pd.DataFrame()
 
@@ -119,17 +118,6 @@ def build_workout_glucose_df(
         })
 
     result = pd.DataFrame(rows)
-
-    # Drop activity types with fewer than _MIN_WORKOUTS_PER_TYPE workouts
-    # (pinned activities in _ALWAYS_INCLUDE are kept regardless of count)
-    if not result.empty:
-        counts = result["activity"].value_counts()
-        keep = counts[counts >= _MIN_WORKOUTS_PER_TYPE].index.union(_ALWAYS_INCLUDE)
-        dropped = set(result["activity"].unique()) - set(keep)
-        if dropped:
-            log.info("Dropping activity types with n<%d: %s", _MIN_WORKOUTS_PER_TYPE, dropped)
-        result = result[result["activity"].isin(keep)]
-
     log.info("Built workout-glucose dataset: %d workouts with glucose overlap.", len(result))
     return result.sort_values("start_local").reset_index(drop=True)
 
@@ -153,15 +141,7 @@ def glucose_response_curve(
     if workouts.empty or glucose.empty:
         return pd.DataFrame()
 
-    wk = workouts[~workouts["activity"].isin(_EXCLUDE_ACTIVITIES)].copy()
-    if wk.empty:
-        return pd.DataFrame()
-
-    # Drop activity types with fewer than _MIN_WORKOUTS_PER_TYPE workouts
-    # (pinned activities in _ALWAYS_INCLUDE are kept regardless of count)
-    counts = wk["activity"].value_counts()
-    keep = counts[counts >= _MIN_WORKOUTS_PER_TYPE].index.union(_ALWAYS_INCLUDE)
-    wk = wk[wk["activity"].isin(keep)]
+    wk = workouts[workouts["activity"].isin(_INCLUDE_ACTIVITIES)].copy()
     if wk.empty:
         return pd.DataFrame()
 

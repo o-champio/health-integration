@@ -30,6 +30,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from config import settings as cfg
@@ -91,7 +92,16 @@ def _append_and_dedupe(
 GLUCOSE_PARQUET  = cfg.GLUCOSE_PARQUET
 DAILY_PARQUET    = cfg.DATA_PROCESSED_DIR / "daily_merged.parquet"
 HIGHFREQ_PARQUET = cfg.DATA_PROCESSED_DIR / "highfreq_merged.parquet"
-WORKOUT_PARQUET  = cfg.DATA_PROCESSED_DIR / "workouts.parquet"
+WORKOUT_PARQUET         = cfg.DATA_PROCESSED_DIR / "workouts.parquet"
+DEXCOM_WORKOUTS_PARQUET = cfg.DATA_PROCESSED_DIR / "dexcom_workouts.parquet"
+
+# Dexcom-only exercise events shorter than this are Apple Health noise
+# (standing, short walks). Workouts this short rarely produce a measurable
+# glucose response anyway.
+DEXCOM_WORKOUT_MIN_MINUTES = 25
+# Tolerance window for treating a Dexcom exercise as the same session as
+# an Oura workout (both logged for the same activity).
+DEXCOM_OURA_MATCH_TOLERANCE = pd.Timedelta("5min")
 
 
 # -- Date helpers --------------------------------------------------------------
@@ -280,6 +290,182 @@ def fetch_workouts(
     result = _append_and_dedupe(existing, new_data, sort_col="day")
     _save_processed(result, WORKOUT_PARQUET)
     return result
+
+
+# -- Dexcom workouts (supplement Oura with Apple-Watch sessions) --------------
+
+_DEXCOM_WORKOUT_COLUMNS = [
+    "day", "activity", "start_datetime", "end_datetime",
+    "calories", "distance", "intensity", "label", "source",
+    "dexcom_intensity", "dexcom_duration_min",
+]
+
+
+def _empty_dexcom_workouts() -> pd.DataFrame:
+    return pd.DataFrame(columns=_DEXCOM_WORKOUT_COLUMNS)
+
+
+def _fetch_dexcom_exercise_raw(start_date: str, end_date: str) -> pd.DataFrame:
+    """Call DexcomClient.get_events and return only exercise rows (or empty)."""
+    try:
+        from src.api.dexcom_client import DexcomClient
+        df = DexcomClient().get_events(start_date, end_date)
+    except FileNotFoundError:
+        log.info("Dexcom token not found — skipping Dexcom workouts.")
+        return _empty_dexcom_workouts()
+    except Exception as exc:
+        log.warning("Dexcom events fetch failed (%s). Skipping.", exc)
+        return _empty_dexcom_workouts()
+
+    if df.empty:
+        return _empty_dexcom_workouts()
+    exer = df[df["event_type"] == "exercise"].copy()
+    if exer.empty:
+        return _empty_dexcom_workouts()
+
+    # Synthesize Oura-shaped columns so downstream code can treat these rows
+    # the same way as Oura workouts.
+    ts_iso = exer["timestamp"].dt.strftime("%Y-%m-%dT%H:%M:%S.000")
+    end_ts_iso = (
+        exer["timestamp"] + pd.to_timedelta(exer["value"], unit="m")
+    ).dt.strftime("%Y-%m-%dT%H:%M:%S.000")
+
+    out = pd.DataFrame({
+        "day": exer["timestamp"].dt.normalize(),
+        "activity": "unknown",
+        "start_datetime": ts_iso,
+        "end_datetime": end_ts_iso,
+        "calories": np.nan,
+        "distance": np.nan,
+        "intensity": np.nan,
+        "label": None,
+        "source": "dexcom",
+        "dexcom_intensity": exer["subtype"],
+        "dexcom_duration_min": pd.to_numeric(exer["value"], errors="coerce"),
+    })
+    return out[_DEXCOM_WORKOUT_COLUMNS].reset_index(drop=True)
+
+
+def fetch_dexcom_workouts(
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> pd.DataFrame:
+    """Incrementally sync Dexcom exercise events to DEXCOM_WORKOUTS_PARQUET.
+
+    Output schema matches Oura's workouts parquet so rows can be concatenated
+    (see `_merge_workouts`). Dexcom provides only:
+      - timestamp, duration (min), intensity (light/medium/heavy).
+    Activity type, calories, HR, distance are unavailable.
+    """
+    if start_date is None:
+        start_date = str(cfg.CUTOVER_DATE)  # Dexcom only has data after cutover
+    if end_date is None:
+        end_date = _today()
+
+    existing = _load_existing(DEXCOM_WORKOUTS_PARQUET)
+
+    fetch_start = start_date
+    if existing is not None and not existing.empty and "day" in existing.columns:
+        last_day = pd.Timestamp(existing["day"].max())
+        candidate = (last_day + timedelta(days=1)).strftime("%Y-%m-%d")
+        if candidate > end_date:
+            log.info("Dexcom workouts up to date through %s.", last_day.strftime("%Y-%m-%d"))
+            return existing
+        fetch_start = candidate
+        log.info("Dexcom workouts: fetching from %s (cached through %s)",
+                 fetch_start, last_day.strftime("%Y-%m-%d"))
+
+    # Dexcom /events has a 30-day max window — chunk like Oura.
+    chunks = []
+    for cs, ce in _date_chunks(fetch_start, end_date, max_days=30):
+        with _timed(f"Dexcom workouts {cs}..{ce}"):
+            part = _fetch_dexcom_exercise_raw(cs, ce)
+        if not part.empty:
+            chunks.append(part)
+
+    new_data = pd.concat(chunks, ignore_index=True) if chunks else _empty_dexcom_workouts()
+
+    if new_data.empty and existing is not None:
+        _save_processed(existing, DEXCOM_WORKOUTS_PARQUET)
+        return existing
+
+    result = _append_and_dedupe(existing, new_data, sort_col="start_datetime")
+    _save_processed(result, DEXCOM_WORKOUTS_PARQUET)
+    return result
+
+
+def _merge_workouts(
+    oura: pd.DataFrame,
+    dex: pd.DataFrame,
+    min_duration_min: int = DEXCOM_WORKOUT_MIN_MINUTES,
+    tolerance: pd.Timedelta = DEXCOM_OURA_MATCH_TOLERANCE,
+) -> pd.DataFrame:
+    """Concat Oura + Dexcom-only workouts.
+
+    Dexcom rows are dropped when:
+      1. duration < `min_duration_min` (Apple-Health noise), or
+      2. start time is within ±`tolerance` of any Oura workout start (duplicate).
+    Remaining Dexcom rows are labelled `activity="unknown"` and concatenated.
+    """
+    if oura is None:
+        oura = pd.DataFrame()
+    if dex is None or dex.empty:
+        log.info("Workouts merged: oura=%d, dexcom_raw=0", len(oura))
+        return oura.reset_index(drop=True) if not oura.empty else oura
+
+    dex_raw = len(dex)
+
+    dex = dex[pd.to_numeric(dex["dexcom_duration_min"], errors="coerce") >= min_duration_min].copy()
+    short_dropped = dex_raw - len(dex)
+
+    if dex.empty:
+        log.info(
+            "Workouts merged: oura=%d, dexcom_raw=%d, dexcom_short_dropped=%d, "
+            "dexcom_dup_dropped=0, dexcom_kept=0",
+            len(oura), dex_raw, short_dropped,
+        )
+        return oura.reset_index(drop=True) if not oura.empty else oura
+
+    # Parse start timestamps (tz-aware) for the overlap check; keep originals.
+    dex["_start_dt"] = pd.to_datetime(dex["start_datetime"], utc=True, errors="coerce")
+    dex = dex.dropna(subset=["_start_dt"]).sort_values("_start_dt")
+
+    if oura is None or oura.empty or "start_datetime" not in oura.columns:
+        kept = dex.drop(columns="_start_dt")
+        log.info(
+            "Workouts merged: oura=0, dexcom_raw=%d, dexcom_short_dropped=%d, "
+            "dexcom_dup_dropped=0, dexcom_kept=%d",
+            dex_raw, short_dropped, len(kept),
+        )
+        return kept.reset_index(drop=True)
+
+    oura_sorted = oura.copy()
+    oura_sorted["_start_dt"] = pd.to_datetime(
+        oura_sorted["start_datetime"], utc=True, errors="coerce"
+    )
+    oura_sorted = oura_sorted.dropna(subset=["_start_dt"]).sort_values("_start_dt")
+
+    matched = pd.merge_asof(
+        dex[["_start_dt"]].reset_index().rename(columns={"index": "_dex_idx"}),
+        oura_sorted[["_start_dt"]].reset_index().rename(columns={"index": "_oura_idx"}),
+        on="_start_dt",
+        direction="nearest",
+        tolerance=tolerance,
+    )
+    dup_dex_idx = matched.loc[matched["_oura_idx"].notna(), "_dex_idx"].tolist()
+    dex_only = dex.drop(index=dup_dex_idx).drop(columns="_start_dt")
+    dup_dropped = len(dup_dex_idx)
+
+    log.info(
+        "Workouts merged: oura=%d, dexcom_raw=%d, dexcom_short_dropped=%d, "
+        "dexcom_dup_dropped=%d, dexcom_kept=%d",
+        len(oura), dex_raw, short_dropped, dup_dropped, len(dex_only),
+    )
+
+    combined = pd.concat([oura, dex_only], ignore_index=True, sort=False)
+    if "day" in combined.columns:
+        combined = combined.sort_values("day").reset_index(drop=True)
+    return combined
 
 
 # -- Oura daily helpers --------------------------------------------------------
@@ -579,7 +765,9 @@ def sync_all(
         results["daily"] = build_daily_dataset(data_dir=data_dir, _glucose=glucose)
 
     with _timed("sync_all: workouts"):
-        results["workouts"] = fetch_workouts()
+        oura_wk = fetch_workouts()
+        dex_wk = fetch_dexcom_workouts()
+        results["workouts"] = _merge_workouts(oura_wk, dex_wk)
 
     with _timed("sync_all: highfreq"):
         results["highfreq"] = build_highfreq_dataset(data_dir=data_dir, _glucose=glucose)
