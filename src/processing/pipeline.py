@@ -778,6 +778,18 @@ def build_highfreq_dataset(
         new_merged = glucose.copy()
 
     result = _append_and_dedupe(existing, new_merged, sort_col="timestamp", dedupe_col="timestamp")
+
+    # -- Sanity: post-merge timezone alignment ---------------------------------
+    # All Oura/CGM timestamps must be local-naive. If a future change leaks a
+    # tz-aware or UTC-naive series back in, this fires loudly here rather than
+    # silently misattributing readings to the wrong calendar day.
+    if not result.empty and "timestamp" in result.columns:
+        ts = result["timestamp"]
+        assert ts.dt.tz is None, (
+            f"highfreq merge produced tz-aware timestamps (tz={ts.dt.tz}); "
+            "all timestamps must be local-naive after merge."
+        )
+
     _save_processed(result, HIGHFREQ_PARQUET)
     return result
 
