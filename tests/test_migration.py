@@ -87,3 +87,55 @@ def test_read_schema_version_missing_metadata_returns_1(tmp_path):
 def test_read_schema_version_nonexistent_returns_1(tmp_path):
     path = tmp_path / "nope.parquet"
     assert read_schema_version(path) == 1
+
+
+# ── pipeline load path integration ────────────────────────────────────────────
+
+def test_pipeline_load_migrates_v1_parquet(tmp_path, monkeypatch):
+    """Loading a v1-shaped parquet via _load_existing migrates and re-stamps it."""
+    from src.processing import pipeline
+
+    # Build a v1-style parquet: UTC-naive timestamps, no schema_version metadata.
+    df = pd.DataFrame({
+        "timestamp": [pd.Timestamp("2025-03-14 23:30:00")],
+        "glucose_mgdl": [110.0],
+        "bpm": [60],
+    })
+    path = tmp_path / "highfreq_merged.parquet"
+    df.to_parquet(path, index=False)
+    assert read_schema_version(path) == 1
+
+    loaded = pipeline._load_existing(path)
+
+    # Returned frame is migrated.
+    assert loaded.iloc[0]["timestamp"] == pd.Timestamp("2025-03-14 20:30:00")
+    # File on disk is rewritten with v2 stamp.
+    assert read_schema_version(path) == cfg.SCHEMA_VERSION
+
+
+def test_pipeline_load_skips_migration_when_current(tmp_path):
+    from src.processing import pipeline
+
+    df = pd.DataFrame({"timestamp": [pd.Timestamp("2025-03-14 20:30:00")]})
+    path = tmp_path / "highfreq_merged.parquet"
+    write_with_schema_version(df, path, cfg.SCHEMA_VERSION)
+
+    loaded = pipeline._load_existing(path)
+    # No second shift was applied.
+    assert loaded.iloc[0]["timestamp"] == pd.Timestamp("2025-03-14 20:30:00")
+
+
+def test_pipeline_load_restamps_non_oura_parquet(tmp_path):
+    """A parquet with no Oura columns (e.g. glucose_readings) still gets the new stamp."""
+    from src.processing import pipeline
+
+    df = pd.DataFrame({
+        "timestamp": [pd.Timestamp("2025-03-14 10:00:00")],
+        "glucose_mgdl": [110.0],
+    })
+    path = tmp_path / "glucose_readings.parquet"
+    df.to_parquet(path, index=False)
+    assert read_schema_version(path) == 1
+
+    pipeline._load_existing(path)
+    assert read_schema_version(path) == cfg.SCHEMA_VERSION
