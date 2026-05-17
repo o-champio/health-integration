@@ -523,12 +523,17 @@ def _merge_workouts(
 
 # -- Oura daily helpers --------------------------------------------------------
 
-def _fetch_sleep_sessions(start_date: str, end_date: str) -> pd.DataFrame:
-    """Fetch detailed sleep sessions and aggregate to one row per day."""
+def _fetch_sleep_sessions_raw(start_date: str, end_date: str) -> pd.DataFrame:
+    """Fetch the raw long-sleep session rows (one per sleep), preserving
+    bedtime_start and sleep_phase_5_min for downstream stage tagging.
+
+    Falls back to an empty DataFrame on API errors per chunk, like
+    _fetch_sleep_sessions.
+    """
     chunks = []
     for cs, ce in _date_chunks(start_date, end_date):
         try:
-            with _timed(f"Oura sleep_sessions {cs}..{ce}"):
+            with _timed(f"Oura sleep_sessions_raw {cs}..{ce}"):
                 df = oura_client.get_sleep_sessions(cs, ce)
             if not df.empty:
                 chunks.append(df)
@@ -538,17 +543,58 @@ def _fetch_sleep_sessions(start_date: str, end_date: str) -> pd.DataFrame:
         return pd.DataFrame()
 
     sessions = pd.concat(chunks, ignore_index=True)
-
     if "type" in sessions.columns:
         long = sessions[sessions["type"] == "long_sleep"]
         if not long.empty:
             sessions = long
-
     if "total_sleep_duration" in sessions.columns:
         sessions = (
             sessions.sort_values("total_sleep_duration", ascending=False)
-            .drop_duplicates(subset=["day"], keep="first")
+                    .drop_duplicates(subset=["day"], keep="first")
         )
+    keep = [c for c in ["day", "bedtime_start", "bedtime_end", "sleep_phase_5_min"]
+            if c in sessions.columns]
+    return sessions[keep].sort_values("bedtime_start").reset_index(drop=True)
+
+
+def _fetch_sleep_sessions(
+    start_date: str,
+    end_date: str,
+    raw: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Aggregate detailed sleep sessions to one row per day.
+
+    Args:
+        start_date, end_date: passed through to the raw fetcher if ``raw`` is None.
+        raw: optional pre-fetched DataFrame (from ``get_sleep_sessions``)
+             to avoid a second API call.
+    """
+    if raw is None:
+        chunks = []
+        for cs, ce in _date_chunks(start_date, end_date):
+            try:
+                with _timed(f"Oura sleep_sessions {cs}..{ce}"):
+                    df = oura_client.get_sleep_sessions(cs, ce)
+                if not df.empty:
+                    chunks.append(df)
+            except Exception as exc:
+                log.warning("get_sleep_sessions (%s..%s): %s", cs, ce, exc)
+        if not chunks:
+            return pd.DataFrame()
+        sessions = pd.concat(chunks, ignore_index=True)
+        if "type" in sessions.columns:
+            long = sessions[sessions["type"] == "long_sleep"]
+            if not long.empty:
+                sessions = long
+        if "total_sleep_duration" in sessions.columns:
+            sessions = (
+                sessions.sort_values("total_sleep_duration", ascending=False)
+                .drop_duplicates(subset=["day"], keep="first")
+            )
+    else:
+        if raw.empty:
+            return pd.DataFrame()
+        sessions = raw
 
     keep_cols = ["day"]
     rename_map = {"day": "date"}
