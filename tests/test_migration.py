@@ -139,3 +139,65 @@ def test_pipeline_load_restamps_non_oura_parquet(tmp_path):
 
     pipeline._load_existing(path)
     assert read_schema_version(path) == cfg.SCHEMA_VERSION
+
+
+# ── v2 → v3 ───────────────────────────────────────────────────────────────────
+
+from src.processing.migrations import migrate_v2_to_v3
+
+
+def test_migrate_v2_to_v3_adds_daily_columns_with_defaults():
+    """v2 daily parquet lacks the new columns; v3 adds them with NaN/False defaults."""
+    df = pd.DataFrame({
+        "date": [pd.Timestamp("2025-05-01")],
+        "sleep_score": [80],
+    })
+    out = migrate_v2_to_v3(df, kind="daily")
+    assert out.iloc[0]["sleep_score"] == 80
+    assert pd.isna(out.iloc[0]["session_glucose_deep_mean"])
+    assert pd.isna(out.iloc[0]["session_glucose_deep_minus_rem"])
+    assert pd.isna(out.iloc[0]["session_pct_time_high_during_deep"])
+    assert out.iloc[0]["in_rest_mode"] is False or out.iloc[0]["in_rest_mode"] == False  # noqa: E712
+
+
+def test_migrate_v2_to_v3_adds_highfreq_sleep_stage_column():
+    df = pd.DataFrame({
+        "timestamp": [pd.Timestamp("2025-05-01 22:00:00")],
+        "glucose_mgdl": [110.0],
+    })
+    out = migrate_v2_to_v3(df, kind="highfreq")
+    assert "sleep_stage" in out.columns
+    assert pd.isna(out.iloc[0]["sleep_stage"])
+
+
+def test_migrate_v2_to_v3_does_not_overwrite_existing_columns():
+    """If the v2 frame already has the columns (defensive), don't blank them out."""
+    df = pd.DataFrame({
+        "date": [pd.Timestamp("2025-05-01")],
+        "session_glucose_deep_mean": [99.0],  # already present somehow
+    })
+    out = migrate_v2_to_v3(df, kind="daily")
+    assert out.iloc[0]["session_glucose_deep_mean"] == 99.0
+
+
+def test_migration_chains_v1_to_v3(tmp_path):
+    """A v1-shaped parquet loaded via _load_existing migrates v1→v2→v3 in one go."""
+    from src.processing import pipeline
+
+    df = pd.DataFrame({
+        "timestamp": [pd.Timestamp("2025-03-14 23:30:00")],  # v1: UTC-naive
+        "glucose_mgdl": [110.0],
+        "bpm": [60],
+    })
+    path = tmp_path / "highfreq_merged.parquet"
+    df.to_parquet(path, index=False)
+    assert read_schema_version(path) == 1
+
+    loaded = pipeline._load_existing(path)
+
+    # v1→v2 shift applied
+    assert loaded.iloc[0]["timestamp"] == pd.Timestamp("2025-03-14 20:30:00")
+    # v2→v3 column added
+    assert "sleep_stage" in loaded.columns
+    # On-disk file is now v3
+    assert read_schema_version(path) == cfg.SCHEMA_VERSION

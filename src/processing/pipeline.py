@@ -37,6 +37,7 @@ from config import settings as cfg
 from src.api import libre_client, oura_client
 from src.processing.migrations import (
     migrate_v1_to_v2,
+    migrate_v2_to_v3,
     read_schema_version,
     write_with_schema_version,
 )
@@ -90,7 +91,10 @@ def _load_existing(path: Path) -> pd.DataFrame | None:
         "Migrating %s from schema v%d to v%d (in-place).",
         path.name, version, cfg.SCHEMA_VERSION,
     )
-    df = migrate_v1_to_v2(df, kind=kind)
+    if version < 2:
+        df = migrate_v1_to_v2(df, kind=kind)
+    if version < 3:
+        df = migrate_v2_to_v3(df, kind=kind)
     write_with_schema_version(df, path, cfg.SCHEMA_VERSION)
     return df
 

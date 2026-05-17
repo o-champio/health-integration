@@ -13,6 +13,7 @@ import logging
 from pathlib import Path
 from typing import Literal
 
+import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -25,6 +26,22 @@ log = logging.getLogger(__name__)
 _V1_UTC_NAIVE_COLUMNS = {
     "daily":    ["bedtime_start", "bedtime_end"],
     "highfreq": ["timestamp"],
+}
+
+# Columns added in v3 (additive — no data shift, just new columns with defaults).
+_V2_TO_V3_NEW_COLUMNS: dict[str, dict[str, object]] = {
+    "daily": {
+        "session_glucose_deep_mean": np.nan,
+        "session_glucose_light_mean": np.nan,
+        "session_glucose_rem_mean": np.nan,
+        "session_glucose_awake_mean": np.nan,
+        "session_glucose_deep_minus_rem": np.nan,
+        "session_pct_time_high_during_deep": np.nan,
+        "in_rest_mode": False,
+    },
+    "highfreq": {
+        "sleep_stage": pd.NA,
+    },
 }
 
 
@@ -53,6 +70,22 @@ def migrate_v1_to_v2(df: pd.DataFrame, kind: Literal["daily", "highfreq"]) -> pd
               .dt.tz_convert(cfg.LOCAL_TIMEZONE)
               .dt.tz_localize(None)
         )
+    return out
+
+
+def migrate_v2_to_v3(df: pd.DataFrame, kind: Literal["daily", "highfreq"]) -> pd.DataFrame:
+    """Additive: add new columns with default values; leave existing data alone.
+
+    Idempotency is enforced by the caller via ``schema_version``. The function
+    itself is also defensively idempotent: pre-existing columns are not
+    overwritten.
+    """
+    if df.empty:
+        return df.copy()
+    out = df.copy()
+    for col, default in _V2_TO_V3_NEW_COLUMNS.get(kind, {}).items():
+        if col not in out.columns:
+            out[col] = default
     return out
 
 
