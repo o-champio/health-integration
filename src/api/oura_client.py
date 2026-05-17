@@ -17,6 +17,23 @@ from config import settings as cfg
 log = logging.getLogger(__name__)
 
 
+# -- Timestamp normalization ---------------------------------------------------
+
+def _to_local_naive(series: pd.Series) -> pd.Series:
+    """Convert a series of ISO/UTC timestamps to local-naive in cfg.LOCAL_TIMEZONE.
+
+    Oura returns timestamps with offsets (e.g. ``2025-03-14T23:30:00+00:00``).
+    Stripping the offset directly leaves the wall-clock at UTC, which silently
+    misaligns the data with CGM rows (already in local time). This helper does
+    the conversion correctly: parse as UTC, convert to local, drop tz info.
+    """
+    return (
+        pd.to_datetime(series, utc=True, errors="coerce")
+          .dt.tz_convert(cfg.LOCAL_TIMEZONE)
+          .dt.tz_localize(None)
+    )
+
+
 # -- Token / session -----------------------------------------------------------
 
 def _load_token() -> dict:
