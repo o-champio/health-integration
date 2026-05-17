@@ -127,3 +127,9 @@ GLUCOSE_HIGH = 180
 # ── Timezone ─────────────────────────────────────────────────────────────────
 
 LOCAL_TIMEZONE = "America/Sao_Paulo"
+
+# -- Parquet schema versioning -------------------------------------------------
+# Bumped when on-disk schema changes in a way that requires migration.
+# v1: original schema (Oura timestamps stored as UTC-naive — buggy)
+# v2: Oura timestamps stored as LOCAL_TIMEZONE-naive
+SCHEMA_VERSION = 2
