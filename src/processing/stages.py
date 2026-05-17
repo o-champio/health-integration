@@ -1,22 +1,18 @@
-"""Hypnogram expansion and per-night glucose-by-stage feature derivation.
+"""Hypnogram expansion.
 
 Oura returns a ``sleep_phase_5_min`` string per sleep session — one digit
 per 5-minute slot starting at ``bedtime_start``. Encoding:
 1=deep, 2=light, 3=REM, 4=awake.
 
-This module turns those strings into a time-indexed stage labels, tags a
-CGM frame with the stage active at each reading, and computes the per-night
-metrics consumed by the daily merge.
+This module expands such strings into a time-indexed stage timeline.
+Subsequent helpers (CGM tagging, per-night metrics) will be added in
+follow-up tasks and will document themselves.
 """
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
-import numpy as np
 import pandas as pd
-
-from config import settings as cfg
 
 log = logging.getLogger(__name__)
 
