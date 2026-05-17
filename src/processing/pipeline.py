@@ -760,6 +760,43 @@ def build_daily_dataset(
         result = _add_lag_features(result)
         result = _add_glucose_variability(result)
 
+    # -- Glucose-by-stage per-night features (Phase B) -------------------------
+    # `glucose` is already in scope (assigned at line 654 by load_glucose_only).
+    if not result.empty and glucose is not None and not glucose.empty:
+        from src.processing.stages import per_night_glucose_by_stage, tag_cgm_with_stage
+        sessions = _fetch_sleep_sessions_raw(start_date, end_date)
+        if not sessions.empty:
+            tagged = tag_cgm_with_stage(glucose, sessions)
+            per_night = per_night_glucose_by_stage(tagged, sessions)
+            if not per_night.empty:
+                result = result.merge(per_night, on="date", how="left")
+
+    # -- Rest-mode flag (Phase B) ----------------------------------------------
+    if not result.empty:
+        try:
+            rest = oura_client.get_rest_mode_periods(start_date, end_date)
+        except Exception as exc:
+            log.warning("get_rest_mode_periods (%s..%s): %s", start_date, end_date, exc)
+            rest = pd.DataFrame(columns=["start_date", "end_date"])
+        result["in_rest_mode"] = False
+        for _, period in rest.iterrows():
+            mask = (result["date"] >= period["start_date"]) & (result["date"] <= period["end_date"])
+            result.loc[mask, "in_rest_mode"] = True
+
+    # Ensure v3 columns are always present so the parquet schema is stable.
+    for col in (
+        "session_glucose_deep_mean",
+        "session_glucose_light_mean",
+        "session_glucose_rem_mean",
+        "session_glucose_awake_mean",
+        "session_glucose_deep_minus_rem",
+        "session_pct_time_high_during_deep",
+    ):
+        if col not in result.columns:
+            result[col] = np.nan
+    if "in_rest_mode" not in result.columns:
+        result["in_rest_mode"] = False
+
     with _timed("Save parquet"):
         _save_processed(result, DAILY_PARQUET)
     return result
