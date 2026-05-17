@@ -41,6 +41,7 @@ from src.processing.migrations import (
     read_schema_version,
     write_with_schema_version,
 )
+from src.processing.stages import tag_cgm_with_stage
 
 log = logging.getLogger(__name__)
 
@@ -835,6 +836,15 @@ def build_highfreq_dataset(
         new_merged = glucose.copy()
 
     result = _append_and_dedupe(existing, new_merged, sort_col="timestamp", dedupe_col="timestamp")
+
+    # -- Tag CGM readings with sleep stage (Phase B) ---------------------------
+    if not result.empty:
+        sessions = _fetch_sleep_sessions_raw(start_date, end_date)
+        if not sessions.empty:
+            with _timed("Tag CGM with sleep stage"):
+                result = tag_cgm_with_stage(result, sessions)
+        else:
+            result["sleep_stage"] = pd.NA
 
     # -- Sanity: post-merge timezone alignment ---------------------------------
     # All Oura/CGM timestamps must be local-naive. If a future change leaks a
