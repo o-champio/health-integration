@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator
@@ -36,19 +37,34 @@ def _date_chunks(start: str, end: str, max_days: int = _DEXCOM_MAX_DAYS) -> Iter
 
 
 def _load_token() -> dict:
-    if not _TOKEN_PATH.exists():
-        raise FileNotFoundError(
-            f"Dexcom token not found at {_TOKEN_PATH}. "
-            "Run `python -m auth.oauth dexcom` to authorize."
-        )
-    with open(_TOKEN_PATH) as f:
-        return json.load(f)
+    """Load token from disk, or fall back to DEXCOM_TOKEN_JSON env var.
+
+    The env-var fallback is for hosted environments (e.g. Streamlit Cloud)
+    where the local token file isn't present.
+    """
+    if _TOKEN_PATH.exists():
+        with open(_TOKEN_PATH) as f:
+            return json.load(f)
+
+    env_blob = os.environ.get("DEXCOM_TOKEN_JSON")
+    if env_blob:
+        log.info("Loading Dexcom token from DEXCOM_TOKEN_JSON env var.")
+        return json.loads(env_blob)
+
+    raise FileNotFoundError(
+        f"Dexcom token not found at {_TOKEN_PATH} and DEXCOM_TOKEN_JSON env "
+        "var is unset. Run `python -m auth.oauth dexcom` to authorize."
+    )
 
 
 def _save_token(token: dict) -> None:
-    _TOKEN_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(_TOKEN_PATH, "w") as f:
-        json.dump(token, f)
+    """Persist refreshed token to disk. Silently no-ops on read-only filesystems."""
+    try:
+        _TOKEN_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(_TOKEN_PATH, "w") as f:
+            json.dump(token, f)
+    except OSError as exc:
+        log.warning("Could not persist Dexcom token to %s: %s", _TOKEN_PATH, exc)
 
 
 def _refresh_token(token: dict) -> dict:
