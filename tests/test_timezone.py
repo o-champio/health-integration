@@ -114,3 +114,22 @@ def test_get_workouts_returns_local_naive():
     assert df["start_datetime"].dt.tz is None
     assert df.iloc[0]["start_datetime"] == pd.Timestamp("2025-03-14 19:00:00")
     assert df.iloc[0]["end_datetime"]   == pd.Timestamp("2025-03-14 20:00:00")
+
+
+# ── End-to-end alignment ──────────────────────────────────────────────────────
+
+def test_oura_event_near_utc_midnight_lands_on_correct_local_day():
+    """An Oura HR sample at 23:30 local time on day X must land on day X locally,
+    even though it is 02:30 UTC on day X+1."""
+    from src.api import oura_client
+
+    fake = {
+        "data": [
+            # 02:30 UTC on Mar 15 = 23:30 local on Mar 14
+            {"timestamp": "2025-03-15T02:30:00+00:00", "bpm": 58, "source": "sleep"},
+        ]
+    }
+    with patch.object(oura_client, "_get", return_value=fake):
+        df = oura_client.get_heartrate("2025-03-14", "2025-03-15")
+
+    assert df.iloc[0]["timestamp"].date() == pd.Timestamp("2025-03-14").date()
