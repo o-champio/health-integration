@@ -89,3 +89,28 @@ def test_get_sleep_sessions_returns_local_naive():
     assert df["bedtime_start"].dt.tz is None
     assert df.iloc[0]["bedtime_start"] == pd.Timestamp("2025-03-14 23:00:00")
     assert df.iloc[0]["bedtime_end"]   == pd.Timestamp("2025-03-15 07:00:00")
+
+
+# ── get_workouts normalization ────────────────────────────────────────────────
+
+
+def test_get_workouts_returns_local_naive():
+    from src.api import oura_client
+
+    fake = {
+        "data": [
+            {
+                "id": "w",
+                "day": "2025-03-14",
+                "activity": "running",
+                "start_datetime": "2025-03-14T22:00:00+00:00",  # 19:00 local
+                "end_datetime":   "2025-03-14T23:00:00+00:00",  # 20:00 local
+            },
+        ]
+    }
+    with patch.object(oura_client, "_get", return_value=fake):
+        df = oura_client.get_workouts("2025-03-14", "2025-03-14")
+
+    assert df["start_datetime"].dt.tz is None
+    assert df.iloc[0]["start_datetime"] == pd.Timestamp("2025-03-14 19:00:00")
+    assert df.iloc[0]["end_datetime"]   == pd.Timestamp("2025-03-14 20:00:00")

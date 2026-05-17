@@ -177,4 +177,7 @@ def get_workouts(start_date: str, end_date: str) -> pd.DataFrame:
         return df
     df = df.drop(columns=["id"], errors="ignore")
     df["day"] = pd.to_datetime(df.get("day"), errors="coerce")
+    for col in ["start_datetime", "end_datetime"]:
+        if col in df.columns:
+            df[col] = _to_local_naive(df[col])
     return df.sort_values("day").reset_index(drop=True)
