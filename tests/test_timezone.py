@@ -5,7 +5,6 @@ import sys
 from pathlib import Path
 
 import pandas as pd
-import pytest
 
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
@@ -38,6 +37,7 @@ def test_to_local_naive_preserves_nat():
 
 
 def test_to_local_naive_empty_series():
+    """Empty input should return an empty, tz-naive datetime series."""
     out = _to_local_naive(pd.Series([], dtype="object"))
     assert len(out) == 0
     assert out.dt.tz is None
