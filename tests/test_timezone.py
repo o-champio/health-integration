@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+from unittest.mock import patch
 
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
@@ -44,13 +45,6 @@ def test_to_local_naive_empty_series():
 
 
 # ── get_heartrate normalization ───────────────────────────────────────────────
-
-from unittest.mock import patch
-
-
-def _fake_oura_response(payload):
-    """Mock for oura_client._get returning a fake JSON payload."""
-    return payload
 
 
 def test_get_heartrate_returns_local_naive():
