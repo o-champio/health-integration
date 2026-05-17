@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 
 import pandas as pd
@@ -37,20 +38,56 @@ def _to_local_naive(series: pd.Series) -> pd.Series:
 # -- Token / session -----------------------------------------------------------
 
 def _load_token() -> dict:
-    """Load the saved token from disk."""
+    """Load the saved token from disk, or fall back to OURA_TOKEN_JSON env var.
+
+    The env-var fallback is for hosted environments (e.g. Streamlit Cloud)
+    where the local token file isn't present. On those platforms refreshed
+    tokens are kept in memory for the container's lifetime; the env-var copy
+    only re-seeds the next cold start.
+    """
     path = Path(cfg.TOKEN_FILE)
-    if not path.exists():
-        raise FileNotFoundError(
-            f"No token at {cfg.TOKEN_FILE}. Run `python -m auth.oauth` first."
-        )
-    with open(path) as f:
-        return json.load(f)
+    if path.exists():
+        with open(path) as f:
+            return json.load(f)
+
+    env_blob = os.environ.get("OURA_TOKEN_JSON")
+    if env_blob:
+        log.info("Loading Oura token from OURA_TOKEN_JSON env var.")
+        return json.loads(env_blob)
+
+    raise FileNotFoundError(
+        f"No token at {cfg.TOKEN_FILE} and OURA_TOKEN_JSON env var is unset. "
+        "Run `python -m auth.oauth` first."
+    )
 
 
 def _save_token(token: dict) -> None:
-    Path(cfg.TOKEN_DIR).mkdir(parents=True, exist_ok=True)
-    with open(cfg.TOKEN_FILE, "w") as f:
-        json.dump(token, f)
+    """Persist the refreshed token to disk. Silently no-ops if the filesystem
+    is read-only or ephemeral (e.g. Streamlit Cloud)."""
+    try:
+        Path(cfg.TOKEN_DIR).mkdir(parents=True, exist_ok=True)
+        with open(cfg.TOKEN_FILE, "w") as f:
+            json.dump(token, f)
+    except OSError as exc:
+        log.warning("Could not persist Oura token to %s: %s", cfg.TOKEN_FILE, exc)
+
+
+# Module-level cache so refreshed tokens survive across calls when the
+# filesystem is ephemeral (Streamlit Cloud) and _save_token is a no-op.
+_TOKEN_CACHE: dict | None = None
+
+
+def _get_token() -> dict:
+    global _TOKEN_CACHE
+    if _TOKEN_CACHE is None:
+        _TOKEN_CACHE = _load_token()
+    return _TOKEN_CACHE
+
+
+def _set_token(token: dict) -> None:
+    global _TOKEN_CACHE
+    _TOKEN_CACHE = token
+    _save_token(token)
 
 
 def _refresh_token(token: dict) -> dict:
@@ -69,14 +106,14 @@ def _refresh_token(token: dict) -> dict:
         log.error("Token refresh failed (%s): %s", resp.status_code, resp.text)
     resp.raise_for_status()
     new_token = resp.json()
-    _save_token(new_token)
+    _set_token(new_token)
     log.info("Token refreshed and saved.")
     return new_token
 
 
 def _get(endpoint: str, params: dict | None = None) -> dict:
     """Authenticated GET to Oura v2 API. Auto-refreshes on 401."""
-    token = _load_token()
+    token = _get_token()
     headers = {"Authorization": f"Bearer {token['access_token']}"}
     url = f"{cfg.BASE_URL}{endpoint}"
 

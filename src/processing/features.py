@@ -138,17 +138,19 @@ def _add_derived_ratios(df: pd.DataFrame) -> pd.DataFrame:
     """Add composite features with physiological rationale."""
     # Sleep-to-activity ratio: high sleep quality + high activity -> better glucose control
     if "prev_night_sleep_score" in df.columns and "prev_day_activity_score" in df.columns:
-        mask = df["prev_day_activity_score"].notna() & (df["prev_day_activity_score"] > 0)
-        df.loc[mask, "sleep_activity_ratio"] = (
-            df.loc[mask, "prev_night_sleep_score"] / df.loc[mask, "prev_day_activity_score"]
-        ).round(3)
+        # Coerce to numeric — Oura columns can come back as object dtype on
+        # some pandas/pyarrow combinations when null counts are high.
+        sleep = pd.to_numeric(df["prev_night_sleep_score"], errors="coerce")
+        act = pd.to_numeric(df["prev_day_activity_score"], errors="coerce")
+        mask = act.notna() & (act > 0)
+        df.loc[mask, "sleep_activity_ratio"] = (sleep[mask] / act[mask]).round(3)
 
     # HRV-to-resting-HR ratio: higher = better autonomic balance
     if "prev_night_hrv" in df.columns and "prev_night_lowest_hr" in df.columns:
-        mask = df["prev_night_lowest_hr"].notna() & (df["prev_night_lowest_hr"] > 0)
-        df.loc[mask, "hrv_hr_ratio"] = (
-            df.loc[mask, "prev_night_hrv"] / df.loc[mask, "prev_night_lowest_hr"]
-        ).round(3)
+        hrv = pd.to_numeric(df["prev_night_hrv"], errors="coerce")
+        hr = pd.to_numeric(df["prev_night_lowest_hr"], errors="coerce")
+        mask = hr.notna() & (hr > 0)
+        df.loc[mask, "hrv_hr_ratio"] = (hrv[mask] / hr[mask]).round(3)
 
     return df
 
