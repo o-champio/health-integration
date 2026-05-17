@@ -35,6 +35,11 @@ import pandas as pd
 
 from config import settings as cfg
 from src.api import libre_client, oura_client
+from src.processing.migrations import (
+    migrate_v1_to_v2,
+    read_schema_version,
+    write_with_schema_version,
+)
 
 log = logging.getLogger(__name__)
 
@@ -53,19 +58,63 @@ _OURA_MAX_DAYS = 30
 # -- Persistence ---------------------------------------------------------------
 
 def _load_existing(path: Path) -> pd.DataFrame | None:
-    """Load an existing processed parquet file, if it exists."""
-    if path.exists():
-        with _timed(f"Load parquet ({path.name})"):
-            df = pd.read_parquet(path)
-        log.info("Loaded %d rows from %s", len(df), path.name)
+    """Load an existing processed parquet file, if it exists.
+
+    If the file's schema_version is below cfg.SCHEMA_VERSION, run the
+    appropriate migration and rewrite the parquet with the new version stamp.
+    Migration kind is inferred from the filename — only parquets that contain
+    Oura timestamp columns need it.
+    """
+    if not path.exists():
+        return None
+
+    with _timed(f"Load parquet ({path.name})"):
+        df = pd.read_parquet(path)
+    log.info("Loaded %d rows from %s", len(df), path.name)
+
+    version = read_schema_version(path)
+    if version >= cfg.SCHEMA_VERSION:
         return df
+
+    kind = _migration_kind_for(path)
+    if kind is None:
+        # No Oura timestamps in this parquet — just re-stamp.
+        log.info(
+            "Re-stamping %s with schema_version=%d (no migration needed).",
+            path.name, cfg.SCHEMA_VERSION,
+        )
+        write_with_schema_version(df, path, cfg.SCHEMA_VERSION)
+        return df
+
+    log.warning(
+        "Migrating %s from schema v%d to v%d (in-place).",
+        path.name, version, cfg.SCHEMA_VERSION,
+    )
+    df = migrate_v1_to_v2(df, kind=kind)
+    write_with_schema_version(df, path, cfg.SCHEMA_VERSION)
+    return df
+
+
+def _migration_kind_for(path: Path) -> str | None:
+    """Map a parquet filename to its migration kind, or None if no migration applies.
+
+    Only the two merged datasets cached UTC-naive Oura timestamps in v1.
+    ``workouts.parquet`` is intentionally excluded: in v1 its ``start_datetime``
+    / ``end_datetime`` columns were stored as raw offset-carrying strings (no
+    ``pd.to_datetime`` was applied), so the UTC-strip bug never corrupted them.
+    Glucose and stats parquets carry no Oura columns at all.
+    """
+    name = path.name
+    if name == "daily_merged.parquet":
+        return "daily"
+    if name == "highfreq_merged.parquet":
+        return "highfreq"
     return None
 
 
 def _save_processed(df: pd.DataFrame, path: Path) -> None:
-    """Save a processed DataFrame to parquet."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(path, index=False)
+    """Save a processed DataFrame to parquet, stamped with the current schema version."""
+    write_with_schema_version(df, path, cfg.SCHEMA_VERSION)
     log.info("Saved %d rows to %s", len(df), path.name)
 
 
@@ -736,6 +785,18 @@ def build_highfreq_dataset(
         new_merged = glucose.copy()
 
     result = _append_and_dedupe(existing, new_merged, sort_col="timestamp", dedupe_col="timestamp")
+
+    # -- Sanity: post-merge timezone alignment ---------------------------------
+    # All Oura/CGM timestamps must be local-naive. If a future change leaks a
+    # tz-aware or UTC-naive series back in, this fires loudly here rather than
+    # silently misattributing readings to the wrong calendar day.
+    if not result.empty and "timestamp" in result.columns:
+        ts = result["timestamp"]
+        assert ts.dt.tz is None, (
+            f"highfreq merge produced tz-aware timestamps (tz={ts.dt.tz}); "
+            "all timestamps must be local-naive after merge."
+        )
+
     _save_processed(result, HIGHFREQ_PARQUET)
     return result
 

@@ -18,6 +18,23 @@ from config import settings as cfg
 log = logging.getLogger(__name__)
 
 
+# -- Timestamp normalization ---------------------------------------------------
+
+def _to_local_naive(series: pd.Series) -> pd.Series:
+    """Convert a series of ISO/UTC timestamps to local-naive in cfg.LOCAL_TIMEZONE.
+
+    Oura returns timestamps with offsets (e.g. ``2025-03-14T23:30:00+00:00``).
+    Stripping the offset directly leaves the wall-clock at UTC, which silently
+    misaligns the data with CGM rows (already in local time). This helper does
+    the conversion correctly: parse as UTC, convert to local, drop tz info.
+    """
+    return (
+        pd.to_datetime(series, utc=True, errors="coerce")
+          .dt.tz_convert(cfg.LOCAL_TIMEZONE)
+          .dt.tz_localize(None)
+    )
+
+
 # -- Token / session -----------------------------------------------------------
 
 def _load_token() -> dict:
@@ -169,7 +186,7 @@ def get_heartrate(start_datetime: str, end_datetime: str) -> pd.DataFrame:
     df = pd.DataFrame(raw.get("data", []))
     if df.empty:
         return df
-    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert(None)
+    df["timestamp"] = _to_local_naive(df["timestamp"])
     return df.sort_values("timestamp").reset_index(drop=True)
 
 
@@ -180,9 +197,12 @@ def get_sleep_sessions(start_date: str, end_date: str) -> pd.DataFrame:
     if df.empty:
         return df
     df = df.drop(columns=["id"], errors="ignore")
-    for col in ["day", "bedtime_start", "bedtime_end"]:
+    for col in ["bedtime_start", "bedtime_end"]:
         if col in df.columns:
-            df[col] = pd.to_datetime(df[col], utc=True, errors="coerce").dt.tz_convert(None)
+            df[col] = _to_local_naive(df[col])
+    if "day" in df.columns:
+        # Oura's `day` is a local-date string (e.g. "2025-03-14") — parse as naive date.
+        df["day"] = pd.to_datetime(df["day"], errors="coerce")
     return df.sort_values("day").reset_index(drop=True)
 
 
@@ -194,4 +214,7 @@ def get_workouts(start_date: str, end_date: str) -> pd.DataFrame:
         return df
     df = df.drop(columns=["id"], errors="ignore")
     df["day"] = pd.to_datetime(df.get("day"), errors="coerce")
+    for col in ["start_datetime", "end_datetime"]:
+        if col in df.columns:
+            df[col] = _to_local_naive(df[col])
     return df.sort_values("day").reset_index(drop=True)
