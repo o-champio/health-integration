@@ -160,9 +160,12 @@ def get_sleep_sessions(start_date: str, end_date: str) -> pd.DataFrame:
     if df.empty:
         return df
     df = df.drop(columns=["id"], errors="ignore")
-    for col in ["day", "bedtime_start", "bedtime_end"]:
+    for col in ["bedtime_start", "bedtime_end"]:
         if col in df.columns:
-            df[col] = pd.to_datetime(df[col], utc=True, errors="coerce").dt.tz_convert(None)
+            df[col] = _to_local_naive(df[col])
+    if "day" in df.columns:
+        # Oura's `day` is a local-date string (e.g. "2025-03-14") — parse as naive date.
+        df["day"] = pd.to_datetime(df["day"], errors="coerce")
     return df.sort_values("day").reset_index(drop=True)
 
 

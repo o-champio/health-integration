@@ -64,3 +64,28 @@ def test_get_heartrate_returns_local_naive():
     assert df.iloc[0]["timestamp"] == pd.Timestamp("2025-03-14 20:30:00")
     # 02:15 UTC on Mar 15 = 23:15 local on Mar 14
     assert df.iloc[1]["timestamp"] == pd.Timestamp("2025-03-14 23:15:00")
+
+
+# ── get_sleep_sessions normalization ─────────────────────────────────────────
+
+
+def test_get_sleep_sessions_returns_local_naive():
+    from src.api import oura_client
+
+    fake = {
+        "data": [
+            {
+                "id": "x",
+                "day": "2025-03-14",
+                "bedtime_start": "2025-03-15T02:00:00+00:00",  # 23:00 local Mar 14
+                "bedtime_end":   "2025-03-15T10:00:00+00:00",  # 07:00 local Mar 15
+                "average_hrv": 50,
+            },
+        ]
+    }
+    with patch.object(oura_client, "_get", return_value=fake):
+        df = oura_client.get_sleep_sessions("2025-03-14", "2025-03-15")
+
+    assert df["bedtime_start"].dt.tz is None
+    assert df.iloc[0]["bedtime_start"] == pd.Timestamp("2025-03-14 23:00:00")
+    assert df.iloc[0]["bedtime_end"]   == pd.Timestamp("2025-03-15 07:00:00")
