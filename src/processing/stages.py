@@ -12,7 +12,10 @@ from __future__ import annotations
 
 import logging
 
+import numpy as np
 import pandas as pd
+
+from config import settings as cfg
 
 log = logging.getLogger(__name__)
 
@@ -94,3 +97,100 @@ def expand_hypnogram(bedtime_start: pd.Timestamp, code: str) -> pd.DataFrame:
     times = pd.date_range(bedtime_start, periods=len(code), freq=_FIVE_MIN)
     stages = [STAGE_CODES.get(c) for c in code]
     return pd.DataFrame({"t": times, "stage": stages})
+
+
+_OUTPUT_COLUMNS = [
+    "date",
+    "session_glucose_deep_mean",
+    "session_glucose_light_mean",
+    "session_glucose_rem_mean",
+    "session_glucose_awake_mean",
+    "session_glucose_deep_minus_rem",
+    "session_pct_time_high_during_deep",
+]
+
+
+def _assign_night(tagged: pd.DataFrame, sessions: pd.DataFrame) -> pd.Series:
+    """Map each tagged CGM row to its sleep session's bedtime_start date.
+
+    Uses merge_asof backward against bedtime_start so a reading at 02:00
+    is assigned to the previous evening's session, not the wall-clock day.
+    """
+    if sessions.empty or tagged.empty:
+        return pd.Series([pd.NaT] * len(tagged), index=tagged.index, dtype="datetime64[ns]")
+    sess = sessions[["bedtime_start"]].sort_values("bedtime_start").reset_index(drop=True)
+    sess["night"] = sess["bedtime_start"].dt.normalize()
+    cgm = tagged.sort_values("timestamp").reset_index()
+    merged = pd.merge_asof(
+        cgm[["index", "timestamp"]],
+        sess,
+        left_on="timestamp",
+        right_on="bedtime_start",
+        direction="backward",
+    )
+    return merged.set_index("index")["night"].reindex(tagged.index)
+
+
+def per_night_glucose_by_stage(
+    tagged_cgm: pd.DataFrame,
+    sessions: pd.DataFrame,
+) -> pd.DataFrame:
+    """Compute per-night glucose-by-stage metrics.
+
+    Args:
+        tagged_cgm: CGM frame with ``timestamp``, ``glucose_mgdl``, ``sleep_stage``.
+                    Rows where ``sleep_stage`` is NaN are dropped.
+        sessions:   DataFrame with at least ``bedtime_start`` (local-naive).
+                    Used to map each tagged reading to its session's night.
+
+    Returns:
+        DataFrame keyed by ``date`` (the calendar day of bedtime_start) with the
+        six metric columns documented in the spec. Missing stages -> NaN.
+    """
+    empty_out = pd.DataFrame(columns=_OUTPUT_COLUMNS)
+    if tagged_cgm.empty:
+        return empty_out
+
+    df = tagged_cgm.dropna(subset=["sleep_stage"]).copy()
+    if df.empty:
+        return empty_out
+
+    df["date"] = _assign_night(df, sessions)
+    df = df.dropna(subset=["date"])
+    if df.empty:
+        return empty_out
+
+    pivot = (
+        df.groupby(["date", "sleep_stage"])["glucose_mgdl"]
+          .mean()
+          .unstack("sleep_stage")
+    )
+    for stage in ("deep", "light", "rem", "awake"):
+        if stage not in pivot.columns:
+            pivot[stage] = np.nan
+
+    result = pd.DataFrame({
+        "date": pivot.index,
+        "session_glucose_deep_mean":  pivot["deep"].values,
+        "session_glucose_light_mean": pivot["light"].values,
+        "session_glucose_rem_mean":   pivot["rem"].values,
+        "session_glucose_awake_mean": pivot["awake"].values,
+    })
+    result["session_glucose_deep_minus_rem"] = (
+        result["session_glucose_deep_mean"] - result["session_glucose_rem_mean"]
+    )
+
+    deep_only = df[df["sleep_stage"] == "deep"]
+    if deep_only.empty:
+        result["session_pct_time_high_during_deep"] = np.nan
+    else:
+        deep_only = deep_only.assign(
+            high=(deep_only["glucose_mgdl"] > cfg.GLUCOSE_HIGH).astype(float),
+        )
+        pct = deep_only.groupby("date")["high"].mean()
+        result = result.merge(
+            pct.rename("session_pct_time_high_during_deep").reset_index(),
+            on="date", how="left",
+        )
+
+    return result[_OUTPUT_COLUMNS].sort_values("date").reset_index(drop=True)
