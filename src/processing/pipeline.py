@@ -96,7 +96,14 @@ def _load_existing(path: Path) -> pd.DataFrame | None:
 
 
 def _migration_kind_for(path: Path) -> str | None:
-    """Map a parquet filename to its migration kind, or None if no migration applies."""
+    """Map a parquet filename to its migration kind, or None if no migration applies.
+
+    Only the two merged datasets cached UTC-naive Oura timestamps in v1.
+    ``workouts.parquet`` is intentionally excluded: in v1 its ``start_datetime``
+    / ``end_datetime`` columns were stored as raw offset-carrying strings (no
+    ``pd.to_datetime`` was applied), so the UTC-strip bug never corrupted them.
+    Glucose and stats parquets carry no Oura columns at all.
+    """
     name = path.name
     if name == "daily_merged.parquet":
         return "daily"
