@@ -149,7 +149,7 @@ def get_heartrate(start_datetime: str, end_datetime: str) -> pd.DataFrame:
     df = pd.DataFrame(raw.get("data", []))
     if df.empty:
         return df
-    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert(None)
+    df["timestamp"] = _to_local_naive(df["timestamp"])
     return df.sort_values("timestamp").reset_index(drop=True)
 
 

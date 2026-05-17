@@ -41,3 +41,32 @@ def test_to_local_naive_empty_series():
     out = _to_local_naive(pd.Series([], dtype="object"))
     assert len(out) == 0
     assert out.dt.tz is None
+
+
+# ── get_heartrate normalization ───────────────────────────────────────────────
+
+from unittest.mock import patch
+
+
+def _fake_oura_response(payload):
+    """Mock for oura_client._get returning a fake JSON payload."""
+    return payload
+
+
+def test_get_heartrate_returns_local_naive():
+    from src.api import oura_client
+
+    fake = {
+        "data": [
+            {"timestamp": "2025-03-14T23:30:00+00:00", "bpm": 60, "source": "awake"},
+            {"timestamp": "2025-03-15T02:15:00+00:00", "bpm": 55, "source": "sleep"},
+        ]
+    }
+    with patch.object(oura_client, "_get", return_value=fake):
+        df = oura_client.get_heartrate("2025-03-14T00:00:00", "2025-03-15T23:59:59")
+
+    assert df["timestamp"].dt.tz is None
+    # 23:30 UTC on Mar 14 = 20:30 local on Mar 14 (São Paulo, UTC-3)
+    assert df.iloc[0]["timestamp"] == pd.Timestamp("2025-03-14 20:30:00")
+    # 02:15 UTC on Mar 15 = 23:15 local on Mar 14
+    assert df.iloc[1]["timestamp"] == pd.Timestamp("2025-03-14 23:15:00")
