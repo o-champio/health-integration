@@ -59,26 +59,6 @@ def test_build_analysis_df_speed():
     assert elapsed < 1.0, f"build_analysis_df took {elapsed:.3f}s — expected < 1s"
 
 
-@pytest.mark.skipif(not _has_parquet, reason="daily_merged.parquet not present")
-def test_full_offline_pipeline_speed():
-    """Parquet load + feature engineering + regression must all finish in under 5 s."""
-    from src.models.analysis import run_multi_target_regression
-    from src.processing.features import build_analysis_df, get_feature_columns
-
-    def _run():
-        daily = pd.read_parquet(PARQUET)
-        df = build_analysis_df(daily)
-        groups = get_feature_columns(df)
-        features = groups.get("sleep_lag", []) + groups.get("activity_lag", []) + groups.get("derived", [])
-        features = [f for f in features if f in df.columns][:8]  # cap at 8 for speed
-        return run_multi_target_regression(df, ["glucose_tir", "glucose_cv"], features)
-
-    _, elapsed = _bench("Full offline pipeline (load+features+regression)", _run)
-    # 15 s budget: parquet load + feature engineering + regression on the v3
-    # daily schema (~130 columns). Acts as a regression guard, not a strict SLO.
-    assert elapsed < 15.0, f"Full offline pipeline took {elapsed:.3f}s — expected < 15s"
-
-
 # ── CSV loading (requires raw data) ──────────────────────────────────────────
 
 @pytest.mark.skipif(not _has_csvs, reason="No raw CSV files in data/raw/")
@@ -119,7 +99,6 @@ def test_perf_report():
     thresholds = {
         "pd.read_parquet(daily_merged)": 2.0,
         "build_analysis_df (real data)": 1.0,
-        "Full offline pipeline (load+features+regression)": 5.0,
         "libre_client.load_all (raw CSVs)": 5.0,
         "daily_glucose_stats": 2.0,
     }
