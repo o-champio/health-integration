@@ -23,7 +23,7 @@ def filter_rest_mode(df: pd.DataFrame) -> pd.DataFrame:
     """Drop rows where ``in_rest_mode`` is truthy. Pass-through if column absent."""
     if "in_rest_mode" not in df.columns:
         return df
-    keep = ~df["in_rest_mode"].fillna(False).infer_objects(copy=False).astype(bool)
+    keep = ~df["in_rest_mode"].astype("boolean").fillna(False).astype(bool)
     return df.loc[keep].copy()
 
 
