@@ -1,9 +1,4 @@
-"""Glucose Deep Dive — trends, hourly heatmap, insulin/meal annotation.
-
-Phase C drop list (vs old _page_glucose):
-- TIR Breakdown tab (overlaps with Trends & GMI)
-- Variability tab (CV is already on Trends & GMI)
-"""
+"""Glucose Deep Dive — trends, TIR breakdown, hourly heatmap, insulin/meal annotation."""
 from __future__ import annotations
 
 import pandas as pd
@@ -46,11 +41,13 @@ def render(df: pd.DataFrame, raw_glucose: pd.DataFrame,
     raw = _filter_raw(raw_glucose, df)
     ev = _filter_events(events, df) if events is not None else pd.DataFrame()
 
-    tab_trends, tab_hourly, tab_meals = st.tabs(
-        ["Trends & GMI", "Hourly Patterns", "Insulin & Meals"]
+    tab_trends, tab_tir, tab_hourly, tab_meals = st.tabs(
+        ["Trends & GMI", "TIR Breakdown", "Hourly Patterns", "Insulin & Meals"]
     )
     with tab_trends:
         _trends(df, ev)
+    with tab_tir:
+        _tir_breakdown(df)
     with tab_hourly:
         _hourly(raw)
     with tab_meals:
@@ -155,6 +152,51 @@ def _trends(df: pd.DataFrame, events: pd.DataFrame) -> None:
                    annotation_text="6.5% excellent", annotation_font_color=C["success"])
     fig2.update_layout(yaxis=dict(title="GMI (%)"), height=260)
     st.plotly_chart(fig2, use_container_width=True, key="gl_gmi")
+
+
+def _tir_breakdown(df: pd.DataFrame) -> None:
+    st.markdown("#### Average TIR Breakdown")
+    needed = ["glucose_tir", "glucose_tar", "glucose_tbr"]
+    if not all(c in df.columns for c in needed):
+        st.info("TIR breakdown data not available.")
+        return
+
+    avg_tir = df["glucose_tir"].mean()
+    avg_tar = df["glucose_tar"].mean()
+    avg_tbr = df["glucose_tbr"].mean()
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("In Range (70–180)", f"{avg_tir:.1%}",
+              delta=f"{(avg_tir - 0.70)*100:+.1f}pp vs 70% target")
+    c2.metric("Above Range (>180)", f"{avg_tar:.1%}")
+    c3.metric("Below Range (<70)", f"{avg_tbr:.1%}")
+
+    fig = go.Figure(go.Pie(
+        labels=["In Range", "Above Range", "Below Range"],
+        values=[avg_tir, avg_tar, avg_tbr],
+        hole=0.62,
+        marker_colors=[C["success"], C["danger"], C["warning"]],
+        textinfo="label+percent",
+        hovertemplate="%{label}: %{value:.1%}<extra></extra>",
+    ))
+    fig.update_layout(height=280, showlegend=False)
+    st.plotly_chart(fig, use_container_width=True, key="gl_tir_donut")
+
+    st.markdown("#### Daily TIR Over Time")
+    tir_data = df[["date"] + needed].dropna()
+    fig2 = go.Figure()
+    fig2.add_trace(go.Bar(x=tir_data["date"], y=tir_data["glucose_tbr"],
+                          name="Below", marker_color=C["warning"]))
+    fig2.add_trace(go.Bar(x=tir_data["date"], y=tir_data["glucose_tir"],
+                          name="In Range", marker_color=C["success"]))
+    fig2.add_trace(go.Bar(x=tir_data["date"], y=tir_data["glucose_tar"],
+                          name="Above", marker_color=C["danger"]))
+    fig2.update_layout(
+        barmode="stack",
+        yaxis=dict(title="Fraction of day", tickformat=".0%"),
+        height=300,
+    )
+    st.plotly_chart(fig2, use_container_width=True, key="gl_tir_daily")
 
 
 def _hourly(raw: pd.DataFrame) -> None:

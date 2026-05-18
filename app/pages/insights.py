@@ -19,6 +19,32 @@ from app._insights import (
 )
 
 
+def _latest(df: pd.DataFrame, col: str) -> float | None:
+    if col not in df.columns:
+        return None
+    sub = df.dropna(subset=[col])
+    if sub.empty:
+        return None
+    val = sub.iloc[-1][col]
+    return float(val) if pd.notna(val) else None
+
+
+def _snapshot(df: pd.DataFrame) -> None:
+    """Five 'latest available value' metric cards at the top of the hub."""
+    tir = _latest(df, "glucose_tir")
+    mean_g = _latest(df, "glucose_mean")
+    sleep = _latest(df, "prev_night_sleep_score")
+    readiness = _latest(df, "prev_day_readiness_score")
+    activity = _latest(df, "prev_day_activity_score")
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Time in Range", f"{tir:.1%}" if tir is not None else "—")
+    c2.metric("Mean Glucose", f"{mean_g:.0f} mg/dL" if mean_g is not None else "—")
+    c3.metric("Sleep Score", f"{sleep:.0f}" if sleep is not None else "—")
+    c4.metric("Readiness", f"{readiness:.0f}" if readiness is not None else "—")
+    c5.metric("Activity Score", f"{activity:.0f}" if activity is not None else "—")
+
+
 def render(df: pd.DataFrame, raw_glucose: pd.DataFrame) -> None:
     """Render the full insights hub.
 
@@ -33,6 +59,9 @@ def render(df: pd.DataFrame, raw_glucose: pd.DataFrame) -> None:
         "tracking whether they show in your data as N grows."
     )
 
+    _snapshot(df)
+    st.divider()
+
     # Row 1: validated / descriptive
     c1, c2 = st.columns(2)
     with c1:
@@ -41,13 +70,6 @@ def render(df: pd.DataFrame, raw_glucose: pd.DataFrame) -> None:
         hourly_pattern.render(raw_glucose)
 
     rolling_tir.render(df)
-
-    st.divider()
-    st.subheader("Literature-monitored relationships")
-    st.caption(
-        "These cards reflect published associations. Our N is currently small; "
-        "we report Spearman rho with explicit uncertainty so you don't over-interpret."
-    )
 
     c3, c4 = st.columns(2)
     with c3:
