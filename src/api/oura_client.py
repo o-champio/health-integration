@@ -218,3 +218,21 @@ def get_workouts(start_date: str, end_date: str) -> pd.DataFrame:
         if col in df.columns:
             df[col] = _to_local_naive(df[col])
     return df.sort_values("day").reset_index(drop=True)
+
+
+def get_rest_mode_periods(start_date: str, end_date: str) -> pd.DataFrame:
+    """Periods where Oura was in rest mode (illness, recovery).
+
+    Returns a DataFrame with columns ``start_date``, ``end_date`` (local-naive
+    Timestamps). Used by Phase C analyses as an outlier filter — days
+    overlapping any rest-mode period should typically be excluded from
+    correlations.
+    """
+    raw = _get("rest_mode_period", {"start_date": start_date, "end_date": end_date})
+    df = pd.json_normalize(raw.get("data", []))
+    if df.empty:
+        return pd.DataFrame(columns=["start_date", "end_date"])
+    df = df.drop(columns=["id"], errors="ignore")
+    df["start_date"] = pd.to_datetime(df.get("start_day"), errors="coerce")
+    df["end_date"]   = pd.to_datetime(df.get("end_day"), errors="coerce")
+    return df[["start_date", "end_date"]].sort_values("start_date").reset_index(drop=True)
