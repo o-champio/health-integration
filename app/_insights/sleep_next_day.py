@@ -41,10 +41,10 @@ def render(df: pd.DataFrame) -> None:
         st.info(f"Need at least {_MIN_N} days with both metrics; have {cav['n']}.")
         return
     if cav["significant"]:
-        copy = (f"With **n={cav['n']}** days, Spearman ρ = **{cav['rho']:+.2f}** "
+        copy = (f"With **n={cav['n']}** days, Spearman rho = **{cav['rho']:+.2f}** "
                 f"(p={cav['p']:.3f}). Signal is present.")
     else:
-        copy = (f"With **n={cav['n']}** days, Spearman ρ = **{cav['rho']:+.2f}** "
+        copy = (f"With **n={cav['n']}** days, Spearman rho = **{cav['rho']:+.2f}** "
                 f"(p={cav['p']:.3f}). Not yet statistically significant — based on "
                 f"published associations between sleep quality and glycemic control, "
                 f"we keep tracking.")

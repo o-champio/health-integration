@@ -47,7 +47,7 @@ def render(raw: pd.DataFrame) -> None:
         return
     if not pd.isna(s["dawn_rise_mgdl"]):
         st.markdown(
-            f"Dawn rise (05-08 vs 02-05 medians): **{s['dawn_rise_mgdl']:+.1f} mg/dL**."
+            f"Dawn rise (05-07 vs 02-04 medians): **{s['dawn_rise_mgdl']:+.1f} mg/dL**."
         )
     ph = s["per_hour"]
     fig = go.Figure()
