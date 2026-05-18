@@ -787,7 +787,7 @@ def build_daily_dataset(
     ]
     result = result.drop(columns=[c for c in _stage_cols if c in result.columns])
     if not result.empty and glucose is not None and not glucose.empty:
-        from src.processing.stages import per_night_glucose_by_stage, tag_cgm_with_stage
+        from src.processing.stages import per_night_glucose_by_stage
         sessions = _fetch_sleep_sessions_raw(start_date, end_date)
         if not sessions.empty:
             tagged = tag_cgm_with_stage(glucose, sessions)

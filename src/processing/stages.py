@@ -115,6 +115,10 @@ def _assign_night(tagged: pd.DataFrame, sessions: pd.DataFrame) -> pd.Series:
 
     Uses merge_asof backward against bedtime_start so a reading at 02:00
     is assigned to the previous evening's session, not the wall-clock day.
+
+    The 16-hour tolerance bounds the lookback so that, after a multi-day Oura
+    gap, readings near the next sleep aren't silently attributed to a session
+    from days earlier.
     """
     if sessions.empty or tagged.empty:
         return pd.Series([pd.NaT] * len(tagged), index=tagged.index, dtype="datetime64[ns]")
@@ -127,6 +131,7 @@ def _assign_night(tagged: pd.DataFrame, sessions: pd.DataFrame) -> pd.Series:
         left_on="timestamp",
         right_on="bedtime_start",
         direction="backward",
+        tolerance=pd.Timedelta(hours=16),
     )
     return merged.set_index("index")["night"].reindex(tagged.index)
 
