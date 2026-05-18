@@ -36,7 +36,7 @@ def summary(df: pd.DataFrame) -> dict:
 def render(df: pd.DataFrame) -> None:
     s = summary(df)
     cav = s["caveat"]
-    st.subheader("Sleep quality & next-day glucose")
+    st.subheader("Sleep quality & same-day glucose")
     if cav["n"] < _MIN_N:
         st.info(f"Need at least {_MIN_N} days with both metrics; have {cav['n']}.")
         return

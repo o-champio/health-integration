@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Health data pipeline that correlates Oura Ring biometric data (sleep, readiness, activity, HRV) with continuous glucose monitor (CGM) readings to extract actionable health insights. Includes a Streamlit dashboard with trend analysis, correlation explorer, and regression modeling.
+Health data pipeline that correlates Oura Ring biometric data (sleep, readiness, activity, HRV) with continuous glucose monitor (CGM) readings to extract actionable health insights. Includes a Streamlit dashboard with trend analysis, a curated insights hub, and per-topic deep-dive pages.
 
 **Data sources:**
 - **Oura Ring** (API v2, OAuth2): daily summaries, detailed sleep sessions (HRV ms, deep sleep duration), 5-min heart rate, workouts. Token auto-refreshes on 401.
