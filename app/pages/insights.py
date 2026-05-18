@@ -33,9 +33,9 @@ def _snapshot(df: pd.DataFrame) -> None:
     """Five 'latest available value' metric cards at the top of the hub."""
     tir = _latest(df, "glucose_tir")
     mean_g = _latest(df, "glucose_mean")
-    sleep = _latest(df, "prev_night_sleep_score")
-    readiness = _latest(df, "prev_day_readiness_score")
-    activity = _latest(df, "prev_day_activity_score")
+    sleep = _latest(df, "sleep_score")
+    readiness = _latest(df, "readiness_score")
+    activity = _latest(df, "activity_score")
 
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Time in Range", f"{tir:.1%}" if tir is not None else "—")
