@@ -342,6 +342,19 @@ def fetch_workouts(
 
     new_data = pd.concat(chunks, ignore_index=True) if chunks else pd.DataFrame()
     result = _append_and_dedupe(existing, new_data, sort_col="day")
+
+    # Coerce mixed-dtype timestamp columns: cached pre-Phase-A workouts stored
+    # start/end as offset-bearing strings; new rows from the fixed get_workouts
+    # come back as local-naive Timestamps. Without this, pyarrow rejects the
+    # mixed object column.
+    for col in ("start_datetime", "end_datetime"):
+        if col in result.columns:
+            result[col] = (
+                pd.to_datetime(result[col], utc=True, errors="coerce")
+                  .dt.tz_convert(cfg.LOCAL_TIMEZONE)
+                  .dt.tz_localize(None)
+            )
+
     _save_processed(result, WORKOUT_PARQUET)
     return result
 
@@ -762,6 +775,17 @@ def build_daily_dataset(
 
     # -- Glucose-by-stage per-night features (Phase B) -------------------------
     # `glucose` is already in scope (assigned at line 654 by load_glucose_only).
+    # The v3 migration may have already added these columns to `result` as NaN
+    # placeholders; drop them so the upcoming merge replaces them cleanly.
+    _stage_cols = [
+        "session_glucose_deep_mean",
+        "session_glucose_light_mean",
+        "session_glucose_rem_mean",
+        "session_glucose_awake_mean",
+        "session_glucose_deep_minus_rem",
+        "session_pct_time_high_during_deep",
+    ]
+    result = result.drop(columns=[c for c in _stage_cols if c in result.columns])
     if not result.empty and glucose is not None and not glucose.empty:
         from src.processing.stages import per_night_glucose_by_stage, tag_cgm_with_stage
         sessions = _fetch_sleep_sessions_raw(start_date, end_date)
@@ -875,6 +899,9 @@ def build_highfreq_dataset(
     result = _append_and_dedupe(existing, new_merged, sort_col="timestamp", dedupe_col="timestamp")
 
     # -- Tag CGM readings with sleep stage (Phase B) ---------------------------
+    # Drop any v3-migration placeholder so tag_cgm_with_stage doesn't duplicate.
+    if "sleep_stage" in result.columns:
+        result = result.drop(columns=["sleep_stage"])
     if not result.empty:
         sessions = _fetch_sleep_sessions_raw(start_date, end_date)
         if not sessions.empty:
