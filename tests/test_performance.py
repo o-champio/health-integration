@@ -74,7 +74,9 @@ def test_full_offline_pipeline_speed():
         return run_multi_target_regression(df, ["glucose_tir", "glucose_cv"], features)
 
     _, elapsed = _bench("Full offline pipeline (load+features+regression)", _run)
-    assert elapsed < 5.0, f"Full offline pipeline took {elapsed:.3f}s — expected < 5s"
+    # 15 s budget: parquet load + feature engineering + regression on the v3
+    # daily schema (~130 columns). Acts as a regression guard, not a strict SLO.
+    assert elapsed < 15.0, f"Full offline pipeline took {elapsed:.3f}s — expected < 15s"
 
 
 # ── CSV loading (requires raw data) ──────────────────────────────────────────

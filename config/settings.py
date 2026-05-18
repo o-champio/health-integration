@@ -127,3 +127,10 @@ GLUCOSE_HIGH = 180
 # ── Timezone ─────────────────────────────────────────────────────────────────
 
 LOCAL_TIMEZONE = "America/Sao_Paulo"
+
+# -- Parquet schema versioning -------------------------------------------------
+# Bumped when on-disk schema changes in a way that requires migration.
+# v1: original schema (Oura timestamps stored as UTC-naive — buggy)
+# v2: Oura timestamps stored as LOCAL_TIMEZONE-naive
+# v3: adds hypnogram-derived per-night columns + sleep_stage + in_rest_mode
+SCHEMA_VERSION = 3

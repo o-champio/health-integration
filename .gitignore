@@ -13,7 +13,8 @@ oura_token.json
 
 # Data (raw CSVs and processed outputs)
 data/raw/
-data/processed/
+data/processed/*
+!data/processed/*.parquet
 
 # ── Python (GitHub template) ──────────────────────────────────────────────────
 # Byte-compiled / optimized / DLL files
@@ -165,4 +166,5 @@ libre_data/
 
 # Testing
 # tests/ — tracked; test suite is version-controlled
+docs/
 

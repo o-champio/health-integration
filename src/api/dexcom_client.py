@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Iterator
 
 import numpy as np
 import pandas as pd
@@ -20,21 +22,49 @@ log = logging.getLogger(__name__)
 
 _TOKEN_PATH = Path(cfg.DEXCOM_TOKEN_FILE)
 
+# Dexcom v3 EGV and Events endpoints reject ranges > 30 days with HTTP 400.
+_DEXCOM_MAX_DAYS = 30
+
+
+def _date_chunks(start: str, end: str, max_days: int = _DEXCOM_MAX_DAYS) -> Iterator[tuple[str, str]]:
+    """Yield (chunk_start, chunk_end) YYYY-MM-DD pairs in <= max_days windows."""
+    s = datetime.strptime(start, "%Y-%m-%d")
+    e = datetime.strptime(end, "%Y-%m-%d")
+    while s <= e:
+        chunk_end = min(s + timedelta(days=max_days - 1), e)
+        yield s.strftime("%Y-%m-%d"), chunk_end.strftime("%Y-%m-%d")
+        s = chunk_end + timedelta(days=1)
+
 
 def _load_token() -> dict:
-    if not _TOKEN_PATH.exists():
-        raise FileNotFoundError(
-            f"Dexcom token not found at {_TOKEN_PATH}. "
-            "Run `python -m auth.oauth dexcom` to authorize."
-        )
-    with open(_TOKEN_PATH) as f:
-        return json.load(f)
+    """Load token from disk, or fall back to DEXCOM_TOKEN_JSON env var.
+
+    The env-var fallback is for hosted environments (e.g. Streamlit Cloud)
+    where the local token file isn't present.
+    """
+    if _TOKEN_PATH.exists():
+        with open(_TOKEN_PATH) as f:
+            return json.load(f)
+
+    env_blob = os.environ.get("DEXCOM_TOKEN_JSON")
+    if env_blob:
+        log.info("Loading Dexcom token from DEXCOM_TOKEN_JSON env var.")
+        return json.loads(env_blob)
+
+    raise FileNotFoundError(
+        f"Dexcom token not found at {_TOKEN_PATH} and DEXCOM_TOKEN_JSON env "
+        "var is unset. Run `python -m auth.oauth dexcom` to authorize."
+    )
 
 
 def _save_token(token: dict) -> None:
-    _TOKEN_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(_TOKEN_PATH, "w") as f:
-        json.dump(token, f)
+    """Persist refreshed token to disk. Silently no-ops on read-only filesystems."""
+    try:
+        _TOKEN_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(_TOKEN_PATH, "w") as f:
+            json.dump(token, f)
+    except OSError as exc:
+        log.warning("Could not persist Dexcom token to %s: %s", _TOKEN_PATH, exc)
 
 
 def _refresh_token(token: dict) -> dict:
@@ -77,6 +107,20 @@ class DexcomClient:
 
     # ── Public methods ────────────────────────────────────────────────────────
 
+    def _fetch_chunked(self, path: str, start_date: str, end_date: str) -> list[dict]:
+        """Issue paginated requests in <= 30-day windows and concatenate ``records``."""
+        all_records: list[dict] = []
+        for chunk_start, chunk_end in _date_chunks(start_date, end_date):
+            data = self._get(
+                path,
+                params={
+                    "startDate": f"{chunk_start}T00:00:00",
+                    "endDate":   f"{chunk_end}T23:59:59",
+                },
+            )
+            all_records.extend(data.get("records", []))
+        return all_records
+
     def get_egvs(
         self,
         start_date: str,
@@ -84,23 +128,18 @@ class DexcomClient:
     ) -> pd.DataFrame:
         """Fetch estimated glucose values (EGVs) for a date range.
 
+        Ranges longer than 30 days are split into multiple requests because the
+        Dexcom v3 ``/egvs`` endpoint rejects wider windows with HTTP 400.
+
         Args:
             start_date: ISO date string, e.g. "2025-01-01"
             end_date:   ISO date string, e.g. "2025-03-14"
 
         Returns:
-            DataFrame with columns: timestamp (UTC, tz-naive), glucose_mg_dl, trend, trend_rate
+            DataFrame with columns: timestamp (local-naive), glucose_mg_dl, trend, trend_rate
         """
-        # Dexcom v3 requires RFC 3339 datetimes
-        start_dt = f"{start_date}T00:00:00"
-        end_dt = f"{end_date}T23:59:59"
+        records = self._fetch_chunked("users/self/egvs", start_date, end_date)
 
-        data = self._get(
-            "users/self/egvs",
-            params={"startDate": start_dt, "endDate": end_dt},
-        )
-
-        records = data.get("records", [])
         if not records:
             log.warning("No EGV records returned for %s – %s", start_date, end_date)
             return pd.DataFrame(columns=["timestamp", "glucose_mg_dl", "trend", "trend_rate"])
@@ -112,7 +151,11 @@ class DexcomClient:
             .dt.tz_convert(cfg.LOCAL_TIMEZONE)
             .dt.tz_localize(None)
         )
-        df = df.sort_values("timestamp").reset_index(drop=True)
+        df = (
+            df.drop_duplicates(subset=["timestamp"], keep="last")
+              .sort_values("timestamp")
+              .reset_index(drop=True)
+        )
 
         keep = ["timestamp", "glucose_mg_dl", "trend", "trend_rate"]
         return df[[c for c in keep if c in df.columns]]
@@ -141,15 +184,8 @@ class DexcomClient:
               subtype: preserved Dexcom eventSubType (e.g. 'light'/'medium'/'heavy'
                        for exercise); NaN for food/insulin.
         """
-        start_dt = f"{start_date}T00:00:00"
-        end_dt = f"{end_date}T23:59:59"
+        records = self._fetch_chunked("users/self/events", start_date, end_date)
 
-        data = self._get(
-            "users/self/events",
-            params={"startDate": start_dt, "endDate": end_dt},
-        )
-
-        records = data.get("records", [])
         if not records:
             log.info("No Dexcom events returned for %s – %s", start_date, end_date)
             return pd.DataFrame(columns=["timestamp", "event_type", "value"])

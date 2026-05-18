@@ -35,6 +35,13 @@ import pandas as pd
 
 from config import settings as cfg
 from src.api import libre_client, oura_client
+from src.processing.migrations import (
+    migrate_v1_to_v2,
+    migrate_v2_to_v3,
+    read_schema_version,
+    write_with_schema_version,
+)
+from src.processing.stages import tag_cgm_with_stage
 
 log = logging.getLogger(__name__)
 
@@ -53,19 +60,66 @@ _OURA_MAX_DAYS = 30
 # -- Persistence ---------------------------------------------------------------
 
 def _load_existing(path: Path) -> pd.DataFrame | None:
-    """Load an existing processed parquet file, if it exists."""
-    if path.exists():
-        with _timed(f"Load parquet ({path.name})"):
-            df = pd.read_parquet(path)
-        log.info("Loaded %d rows from %s", len(df), path.name)
+    """Load an existing processed parquet file, if it exists.
+
+    If the file's schema_version is below cfg.SCHEMA_VERSION, run the
+    appropriate migration and rewrite the parquet with the new version stamp.
+    Migration kind is inferred from the filename — only parquets that contain
+    Oura timestamp columns need it.
+    """
+    if not path.exists():
+        return None
+
+    with _timed(f"Load parquet ({path.name})"):
+        df = pd.read_parquet(path)
+    log.info("Loaded %d rows from %s", len(df), path.name)
+
+    version = read_schema_version(path)
+    if version >= cfg.SCHEMA_VERSION:
         return df
+
+    kind = _migration_kind_for(path)
+    if kind is None:
+        # No Oura timestamps in this parquet — just re-stamp.
+        log.info(
+            "Re-stamping %s with schema_version=%d (no migration needed).",
+            path.name, cfg.SCHEMA_VERSION,
+        )
+        write_with_schema_version(df, path, cfg.SCHEMA_VERSION)
+        return df
+
+    log.warning(
+        "Migrating %s from schema v%d to v%d (in-place).",
+        path.name, version, cfg.SCHEMA_VERSION,
+    )
+    if version < 2:
+        df = migrate_v1_to_v2(df, kind=kind)
+    if version < 3:
+        df = migrate_v2_to_v3(df, kind=kind)
+    write_with_schema_version(df, path, cfg.SCHEMA_VERSION)
+    return df
+
+
+def _migration_kind_for(path: Path) -> str | None:
+    """Map a parquet filename to its migration kind, or None if no migration applies.
+
+    Only the two merged datasets cached UTC-naive Oura timestamps in v1.
+    ``workouts.parquet`` is intentionally excluded: in v1 its ``start_datetime``
+    / ``end_datetime`` columns were stored as raw offset-carrying strings (no
+    ``pd.to_datetime`` was applied), so the UTC-strip bug never corrupted them.
+    Glucose and stats parquets carry no Oura columns at all.
+    """
+    name = path.name
+    if name == "daily_merged.parquet":
+        return "daily"
+    if name == "highfreq_merged.parquet":
+        return "highfreq"
     return None
 
 
 def _save_processed(df: pd.DataFrame, path: Path) -> None:
-    """Save a processed DataFrame to parquet."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(path, index=False)
+    """Save a processed DataFrame to parquet, stamped with the current schema version."""
+    write_with_schema_version(df, path, cfg.SCHEMA_VERSION)
     log.info("Saved %d rows to %s", len(df), path.name)
 
 
@@ -288,6 +342,19 @@ def fetch_workouts(
 
     new_data = pd.concat(chunks, ignore_index=True) if chunks else pd.DataFrame()
     result = _append_and_dedupe(existing, new_data, sort_col="day")
+
+    # Coerce mixed-dtype timestamp columns: cached pre-Phase-A workouts stored
+    # start/end as offset-bearing strings; new rows from the fixed get_workouts
+    # come back as local-naive Timestamps. Without this, pyarrow rejects the
+    # mixed object column.
+    for col in ("start_datetime", "end_datetime"):
+        if col in result.columns:
+            result[col] = (
+                pd.to_datetime(result[col], utc=True, errors="coerce")
+                  .dt.tz_convert(cfg.LOCAL_TIMEZONE)
+                  .dt.tz_localize(None)
+            )
+
     _save_processed(result, WORKOUT_PARQUET)
     return result
 
@@ -470,12 +537,17 @@ def _merge_workouts(
 
 # -- Oura daily helpers --------------------------------------------------------
 
-def _fetch_sleep_sessions(start_date: str, end_date: str) -> pd.DataFrame:
-    """Fetch detailed sleep sessions and aggregate to one row per day."""
+def _fetch_sleep_sessions_raw(start_date: str, end_date: str) -> pd.DataFrame:
+    """Fetch the raw long-sleep session rows (one per sleep), preserving
+    bedtime_start and sleep_phase_5_min for downstream stage tagging.
+
+    Falls back to an empty DataFrame on API errors per chunk, like
+    _fetch_sleep_sessions.
+    """
     chunks = []
     for cs, ce in _date_chunks(start_date, end_date):
         try:
-            with _timed(f"Oura sleep_sessions {cs}..{ce}"):
+            with _timed(f"Oura sleep_sessions_raw {cs}..{ce}"):
                 df = oura_client.get_sleep_sessions(cs, ce)
             if not df.empty:
                 chunks.append(df)
@@ -485,17 +557,58 @@ def _fetch_sleep_sessions(start_date: str, end_date: str) -> pd.DataFrame:
         return pd.DataFrame()
 
     sessions = pd.concat(chunks, ignore_index=True)
-
     if "type" in sessions.columns:
         long = sessions[sessions["type"] == "long_sleep"]
         if not long.empty:
             sessions = long
-
     if "total_sleep_duration" in sessions.columns:
         sessions = (
             sessions.sort_values("total_sleep_duration", ascending=False)
-            .drop_duplicates(subset=["day"], keep="first")
+                    .drop_duplicates(subset=["day"], keep="first")
         )
+    keep = [c for c in ["day", "bedtime_start", "bedtime_end", "sleep_phase_5_min"]
+            if c in sessions.columns]
+    return sessions[keep].sort_values("bedtime_start").reset_index(drop=True)
+
+
+def _fetch_sleep_sessions(
+    start_date: str,
+    end_date: str,
+    raw: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Aggregate detailed sleep sessions to one row per day.
+
+    Args:
+        start_date, end_date: passed through to the raw fetcher if ``raw`` is None.
+        raw: optional pre-fetched DataFrame (from ``get_sleep_sessions``)
+             to avoid a second API call.
+    """
+    if raw is None:
+        chunks = []
+        for cs, ce in _date_chunks(start_date, end_date):
+            try:
+                with _timed(f"Oura sleep_sessions {cs}..{ce}"):
+                    df = oura_client.get_sleep_sessions(cs, ce)
+                if not df.empty:
+                    chunks.append(df)
+            except Exception as exc:
+                log.warning("get_sleep_sessions (%s..%s): %s", cs, ce, exc)
+        if not chunks:
+            return pd.DataFrame()
+        sessions = pd.concat(chunks, ignore_index=True)
+        if "type" in sessions.columns:
+            long = sessions[sessions["type"] == "long_sleep"]
+            if not long.empty:
+                sessions = long
+        if "total_sleep_duration" in sessions.columns:
+            sessions = (
+                sessions.sort_values("total_sleep_duration", ascending=False)
+                .drop_duplicates(subset=["day"], keep="first")
+            )
+    else:
+        if raw.empty:
+            return pd.DataFrame()
+        sessions = raw
 
     keep_cols = ["day"]
     rename_map = {"day": "date"}
@@ -660,6 +773,54 @@ def build_daily_dataset(
         result = _add_lag_features(result)
         result = _add_glucose_variability(result)
 
+    # -- Glucose-by-stage per-night features (Phase B) -------------------------
+    # `glucose` is already in scope (assigned at line 654 by load_glucose_only).
+    # The v3 migration may have already added these columns to `result` as NaN
+    # placeholders; drop them so the upcoming merge replaces them cleanly.
+    _stage_cols = [
+        "session_glucose_deep_mean",
+        "session_glucose_light_mean",
+        "session_glucose_rem_mean",
+        "session_glucose_awake_mean",
+        "session_glucose_deep_minus_rem",
+        "session_pct_time_high_during_deep",
+    ]
+    result = result.drop(columns=[c for c in _stage_cols if c in result.columns])
+    if not result.empty and glucose is not None and not glucose.empty:
+        from src.processing.stages import per_night_glucose_by_stage
+        sessions = _fetch_sleep_sessions_raw(start_date, end_date)
+        if not sessions.empty:
+            tagged = tag_cgm_with_stage(glucose, sessions)
+            per_night = per_night_glucose_by_stage(tagged, sessions)
+            if not per_night.empty:
+                result = result.merge(per_night, on="date", how="left")
+
+    # -- Rest-mode flag (Phase B) ----------------------------------------------
+    if not result.empty:
+        try:
+            rest = oura_client.get_rest_mode_periods(start_date, end_date)
+        except Exception as exc:
+            log.warning("get_rest_mode_periods (%s..%s): %s", start_date, end_date, exc)
+            rest = pd.DataFrame(columns=["start_date", "end_date"])
+        result["in_rest_mode"] = False
+        for _, period in rest.iterrows():
+            mask = (result["date"] >= period["start_date"]) & (result["date"] <= period["end_date"])
+            result.loc[mask, "in_rest_mode"] = True
+
+    # Ensure v3 columns are always present so the parquet schema is stable.
+    for col in (
+        "session_glucose_deep_mean",
+        "session_glucose_light_mean",
+        "session_glucose_rem_mean",
+        "session_glucose_awake_mean",
+        "session_glucose_deep_minus_rem",
+        "session_pct_time_high_during_deep",
+    ):
+        if col not in result.columns:
+            result[col] = np.nan
+    if "in_rest_mode" not in result.columns:
+        result["in_rest_mode"] = False
+
     with _timed("Save parquet"):
         _save_processed(result, DAILY_PARQUET)
     return result
@@ -736,6 +897,30 @@ def build_highfreq_dataset(
         new_merged = glucose.copy()
 
     result = _append_and_dedupe(existing, new_merged, sort_col="timestamp", dedupe_col="timestamp")
+
+    # -- Tag CGM readings with sleep stage (Phase B) ---------------------------
+    # Drop any v3-migration placeholder so tag_cgm_with_stage doesn't duplicate.
+    if "sleep_stage" in result.columns:
+        result = result.drop(columns=["sleep_stage"])
+    if not result.empty:
+        sessions = _fetch_sleep_sessions_raw(start_date, end_date)
+        if not sessions.empty:
+            with _timed("Tag CGM with sleep stage"):
+                result = tag_cgm_with_stage(result, sessions)
+        else:
+            result["sleep_stage"] = pd.NA
+
+    # -- Sanity: post-merge timezone alignment ---------------------------------
+    # All Oura/CGM timestamps must be local-naive. If a future change leaks a
+    # tz-aware or UTC-naive series back in, this fires loudly here rather than
+    # silently misattributing readings to the wrong calendar day.
+    if not result.empty and "timestamp" in result.columns:
+        ts = result["timestamp"]
+        assert ts.dt.tz is None, (
+            f"highfreq merge produced tz-aware timestamps (tz={ts.dt.tz}); "
+            "all timestamps must be local-naive after merge."
+        )
+
     _save_processed(result, HIGHFREQ_PARQUET)
     return result
 
