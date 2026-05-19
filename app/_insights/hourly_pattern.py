@@ -52,13 +52,16 @@ def render(raw: pd.DataFrame) -> None:
             f"Dawn rise (05-07 vs 02-04 medians): **{s['dawn_rise_mgdl']:+.1f} mg/dL**."
         )
     ph = s["per_hour"]
+    from app._theme import C
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=ph["hour"], y=ph["q75"], mode="lines",
-                             line=dict(width=0), showlegend=False))
+                             line=dict(width=0, color=C["glucose"]), showlegend=False))
     fig.add_trace(go.Scatter(x=ph["hour"], y=ph["q25"], mode="lines", fill="tonexty",
-                             line=dict(width=0), showlegend=False, name="IQR"))
+                             line=dict(width=0, color=C["glucose"]),
+                             fillcolor="rgba(52,211,153,0.18)",
+                             showlegend=False, name="IQR"))
     fig.add_trace(go.Scatter(x=ph["hour"], y=ph["median"], mode="lines+markers",
-                             name="Median"))
+                             name="Median", line=dict(color=C["glucose"], width=2.5)))
     fig.update_layout(
         xaxis_title="Hour of day",
         yaxis_title="Glucose (mg/dL)",

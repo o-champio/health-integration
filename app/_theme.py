@@ -99,6 +99,11 @@ pio.templates["health"] = go.layout.Template(
             bordercolor=C["border"],
             borderwidth=1,
             font=dict(color=C["text_sec"], size=12),
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="left",
+            x=0,
         ),
         colorway=[C["chart1"], C["chart2"], C["chart3"], C["warning"], C["danger"], C["secondary"]],
         margin=dict(t=44, b=44, l=52, r=44),
@@ -147,11 +152,20 @@ _CSS = f"""
     font-size: 0.82rem;
     font-weight: 500;
   }}
+  /* Selectbox / multiselect: trigger (closed pill), tags, dropdown menu */
+  [data-baseweb="select"] > div {{ background: {C['card']} !important; border-color: {C['border']} !important; }}
   [data-baseweb="select"] [data-baseweb="tag"] {{ background: {C['surface']} !important; }}
   [data-baseweb="select"] span {{ color: {C['text']} !important; }}
-  [data-baseweb="menu"] li {{ color: {C['text']} !important; background: {C['surface']} !important; }}
-  [data-baseweb="menu"] li:hover {{ background: {C['border']} !important; }}
-  [data-testid="stDateInput"] input {{ color: {C['text']} !important; background: {C['surface']} !important; }}
+  [data-baseweb="select"] input {{ color: {C['text']} !important; background: transparent !important; }}
+  [data-baseweb="popover"] {{ background: {C['card']} !important; }}
+  [data-baseweb="menu"] {{ background: {C['card']} !important; border: 1px solid {C['border']} !important; }}
+  [data-baseweb="menu"] li {{ color: {C['text']} !important; background: {C['card']} !important; }}
+  [data-baseweb="menu"] li:hover, [data-baseweb="menu"] li[aria-selected="true"] {{ background: {C['surface']} !important; }}
+  /* Date / text input: trigger and surrounding container */
+  [data-testid="stDateInput"] input,
+  [data-testid="stTextInput"] input,
+  [data-testid="stNumberInput"] input {{ color: {C['text']} !important; background: {C['card']} !important; border-color: {C['border']} !important; }}
+  [data-baseweb="input"] {{ background: {C['card']} !important; border-color: {C['border']} !important; }}
 
   /* ── Metrics ───────────────────────────────────────────── */
   [data-testid="stMetric"] {{
