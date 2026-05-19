@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import logging
 import sys
-from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -23,6 +22,7 @@ from src.processing.features import build_analysis_df
 from src.processing.pipeline import sync_all
 from app._shared import (
     _sidebar_filters,
+    _load_events,
 )
 
 logging.basicConfig(
@@ -300,75 +300,6 @@ def _load_raw_glucose(synced: dict[str, pd.DataFrame]) -> pd.DataFrame:
 
 def _load_workouts_from_sync(synced: dict[str, pd.DataFrame]) -> pd.DataFrame:
     return synced["workouts"]
-
-
-@st.cache_data(ttl=43200)
-def _load_events() -> pd.DataFrame:
-    """Load insulin, food, and exercise events from LibreLink CSVs + Dexcom API.
-
-    Returns DataFrame with columns: timestamp, event_type, value
-      event_type: 'insulin_rapid' | 'insulin_long' | 'food' | 'exercise'
-      value: units (insulin), grams (food), minutes (exercise), NaN when not logged
-
-    Both sources are concatenated and de-duplicated by (timestamp, event_type).
-    """
-    frames: list[pd.DataFrame] = []
-
-    # LibreLink CSV events.
-    # Record Type mapping in the CSV is unreliable (observed: Type 4 rows carry
-    # the Rapid-Acting Insulin column, Type 5 rows carry Carbohydrates — opposite
-    # of the official spec). Detect each event by which value column is filled.
-    try:
-        from src.api.libre_client import load_all
-        raw = load_all()
-
-        candidates: list[tuple[str, list[str]]] = [
-            ("insulin_rapid", ["Rapid-Acting Insulin (units)", "Rapid Acting Insulin (units)"]),
-            ("food",          ["Carbohydrates (grams)", "Carbs (grams)"]),
-            ("insulin_long",  ["Long-Acting Insulin Value (units)", "Long-Acting Insulin (units)", "Long Acting Insulin (units)"]),
-        ]
-        for etype, cols in candidates:
-            col = next((c for c in cols if c in raw.columns), None)
-            if col is None:
-                continue
-            vals = pd.to_numeric(raw[col], errors="coerce")
-            mask = vals.notna() & (vals > 0)
-            if not mask.any():
-                continue
-            sub = pd.DataFrame({
-                "timestamp": raw.loc[mask, "Device Timestamp"].values,
-                "event_type": etype,
-                "value": vals[mask].values,
-            })
-            frames.append(sub)
-    except Exception as exc:
-        log.warning("Could not load LibreLink events: %s", exc)
-
-    # Dexcom API events — fetch from pipeline cutover through today
-    try:
-        from src.api.dexcom_client import DexcomClient
-        from config import settings as cfg
-        start = getattr(cfg, "CUTOVER_DATE", None) or date.today().replace(year=date.today().year - 1).isoformat()
-        end = date.today().isoformat()
-        dex_ev = DexcomClient().get_events(str(start), end)
-        if not dex_ev.empty:
-            frames.append(dex_ev)
-            log.info("Dexcom events: %d records fetched.", len(dex_ev))
-    except FileNotFoundError:
-        log.info("Dexcom token not found — skipping Dexcom events.")
-    except Exception as exc:
-        log.warning("Could not load Dexcom events: %s", exc)
-
-    if not frames:
-        return pd.DataFrame(columns=["timestamp", "event_type", "value"])
-
-    combined = pd.concat(frames, ignore_index=True)
-    combined["timestamp"] = pd.to_datetime(combined["timestamp"], errors="coerce")
-    combined = combined.dropna(subset=["timestamp"])
-    # Dedup: same event logged in both sources within the same minute
-    combined["_ts_min"] = combined["timestamp"].dt.floor("min")
-    combined = combined.drop_duplicates(subset=["_ts_min", "event_type"]).drop(columns="_ts_min")
-    return combined.sort_values("timestamp").reset_index(drop=True)
 
 
 def _load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
