@@ -13,6 +13,7 @@ import streamlit as st
 from scipy import stats as st_
 
 from app._insights._common import filter_rest_mode, monitored_caveat
+from app._shared import chart
 
 _MIN_N = 10
 
@@ -55,4 +56,4 @@ def render(df: pd.DataFrame) -> None:
         height=300,
         margin=dict(l=10, r=10, t=10, b=10),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    chart(fig)
