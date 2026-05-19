@@ -12,16 +12,20 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from app._shared import _avail, _dual_axis_chart, _label, chart
+from app._shared import _avail, _dual_axis_chart, _label, chart, tabs_or_select
 from app._theme import C
 
 
 def render(df: pd.DataFrame) -> None:
-    tab_sleep, tab_activity = st.tabs(["Sleep architecture", "Activity & Readiness"])
-    with tab_sleep:
-        _sleep(df)
-    with tab_activity:
-        _activity(df)
+    labels = ["Sleep architecture", "Activity & Readiness"]
+    chosen = tabs_or_select(labels)
+    if chosen:  # mobile
+        if chosen == "Sleep architecture": _sleep(df)
+        elif chosen == "Activity & Readiness": _activity(df)
+    else:  # desktop
+        tab_sleep, tab_activity = st.tabs(labels)
+        with tab_sleep: _sleep(df)
+        with tab_activity: _activity(df)
 
 
 def _sleep(df: pd.DataFrame) -> None:

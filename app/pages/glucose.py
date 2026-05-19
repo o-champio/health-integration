@@ -5,7 +5,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from app._shared import _filter_raw, _filter_events, chart
+from app._shared import _filter_raw, _filter_events, chart, tabs_or_select
 from app._theme import C
 
 
@@ -14,17 +14,19 @@ def render(df: pd.DataFrame, raw_glucose: pd.DataFrame,
     raw = _filter_raw(raw_glucose, df)
     ev = _filter_events(events, df) if events is not None else pd.DataFrame()
 
-    tab_trends, tab_tir, tab_hourly, tab_meals = st.tabs(
-        ["Trends & GMI", "TIR Breakdown", "Hourly Patterns", "Insulin & Meals"]
-    )
-    with tab_trends:
-        _trends(df, ev)
-    with tab_tir:
-        _tir_breakdown(df)
-    with tab_hourly:
-        _hourly(raw)
-    with tab_meals:
-        _insulin_meals(df, ev)
+    labels = ["Trends & GMI", "TIR Breakdown", "Hourly Patterns", "Insulin & Meals"]
+    chosen = tabs_or_select(labels)
+    if chosen:  # mobile
+        if chosen == "Trends & GMI": _trends(df, ev)
+        elif chosen == "TIR Breakdown": _tir_breakdown(df)
+        elif chosen == "Hourly Patterns": _hourly(raw)
+        elif chosen == "Insulin & Meals": _insulin_meals(df, ev)
+    else:  # desktop
+        tab_trends, tab_tir, tab_hourly, tab_meals = st.tabs(labels)
+        with tab_trends: _trends(df, ev)
+        with tab_tir: _tir_breakdown(df)
+        with tab_hourly: _hourly(raw)
+        with tab_meals: _insulin_meals(df, ev)
 
 
 # ── Private helper ─────────────────────────────────────────────────────────────

@@ -267,3 +267,15 @@ def _dual_axis_chart(
         height=height,
     )
     chart(fig, key=key or f"dual_{y1}_{y2}")
+
+
+def tabs_or_select(labels: list[str]) -> str:
+    """Render Streamlit tabs on desktop, a selectbox on mobile.
+
+    Returns the chosen label string on mobile, or an empty string on desktop
+    (sentinel for "use st.tabs"). The caller branches on the return value.
+    """
+    from app._mobile import is_mobile
+    if is_mobile():
+        return st.selectbox("Section", labels, label_visibility="collapsed")
+    return ""
