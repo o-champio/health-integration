@@ -12,35 +12,8 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from app._shared import _avail, _dual_axis_chart, _label
-
-
-# ── Palette (mirrors app/main.py) ─────────────────────────────────────────────
-
-C: dict[str, str] = {
-    "bg": "#0F172A",
-    "card": "#111827",
-    "surface": "#1E293B",
-    "border": "#1F2937",
-    "text": "#E5E7EB",
-    "text_sec": "#9CA3AF",
-    "text_muted": "#64748B",
-    "primary": "#6C63FF",
-    "accent": "#818CF8",
-    "accent_soft": "#A5B4FC",
-    "success": "#22C55E",
-    "warning": "#F59E0B",
-    "danger": "#EF4444",
-    "sleep": "#818CF8",
-    "activity": "#22D3EE",
-    "glucose": "#34D399",
-    "chart1": "#6C63FF",
-    "chart2": "#22D3EE",
-    "chart3": "#34D399",
-    "pos": "#22C55E",
-    "neg": "#EF4444",
-    "neutral": "#64748B",
-}
+from app._shared import _avail, _dual_axis_chart, _label, chart
+from app._theme import C
 
 
 def render(df: pd.DataFrame) -> None:
@@ -77,7 +50,7 @@ def _sleep(df: pd.DataFrame) -> None:
         fig.add_trace(go.Scatter(x=df["date"], y=sm, name=_label(y_sleep),
                                  line=dict(color=C["sleep"], width=2.5)))
         fig.update_layout(yaxis=dict(title=_label(y_sleep)), height=300)
-        st.plotly_chart(fig, use_container_width=True, key="lf_sleep_single")
+        chart(fig, key="lf_sleep_single")
 
     # Sleep stage breakdown
     stage_cols = [c for c in ["prev_night_deep_sleep_min", "prev_night_rem_sleep_min"] if c in df.columns]
@@ -92,7 +65,7 @@ def _sleep(df: pd.DataFrame) -> None:
                 marker_color=colors.get(col, C["chart1"]),
             ))
         fig2.update_layout(barmode="stack", yaxis=dict(title="Minutes"), height=260)
-        st.plotly_chart(fig2, use_container_width=True, key="lf_sleep_stages")
+        chart(fig2, key="lf_sleep_stages")
 
     # Per-night glucose by sleep stage (Phase B integration)
     stage_cols = [
@@ -117,7 +90,7 @@ def _sleep(df: pd.DataFrame) -> None:
                 xaxis_title="Date", yaxis_title="Glucose (mg/dL)",
                 height=320, margin=dict(l=10, r=10, t=10, b=10),
             )
-            st.plotly_chart(fig, use_container_width=True)
+            chart(fig)
         else:
             st.info("No nights with stage-tagged glucose yet.")
 
@@ -144,4 +117,4 @@ def _activity(df: pd.DataFrame) -> None:
         fig.add_trace(go.Scatter(x=df["date"], y=sm, name=_label(y_act),
                                  line=dict(color=C["activity"], width=2.5)))
         fig.update_layout(yaxis=dict(title=_label(y_act)), height=300)
-        st.plotly_chart(fig, use_container_width=True, key="lf_act_single")
+        chart(fig, key="lf_act_single")
