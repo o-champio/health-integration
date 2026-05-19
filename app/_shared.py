@@ -11,6 +11,21 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from app._theme import PLOTLY_CONFIG
+
+
+def chart(fig, *, use_container_width: bool = True, key: str | None = None,
+          height: int | None = None) -> None:
+    """Render a Plotly figure with the modebar hidden globally.
+
+    Use this everywhere instead of `st.plotly_chart(...)` so PLOTLY_CONFIG
+    stays the single source of truth for chart UX.
+    """
+    if height is not None:
+        fig.update_layout(height=height)
+    st.plotly_chart(fig, use_container_width=use_container_width,
+                    key=key, config=PLOTLY_CONFIG)
+
 
 # ── Category → column groups ──────────────────────────────────────────────────
 
@@ -179,4 +194,4 @@ def _dual_axis_chart(
         legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
         height=height,
     )
-    st.plotly_chart(fig, use_container_width=True, key=key or f"dual_{y1}_{y2}")
+    chart(fig, key=key or f"dual_{y1}_{y2}")
