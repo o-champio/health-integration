@@ -28,8 +28,8 @@ def test_summary_uses_next_day_shift():
     assert (s["scatter"]["high_activity_min"] == [30, 0, 45]).all()
 
 
-def test_summary_filters_rest_mode_then_shifts():
-    """Rest-mode rows are filtered before the shift, not after."""
+def test_summary_filters_rest_mode_both_sides():
+    """Both the activity day AND its tir_next neighbor must be non-rest-mode."""
     df = pd.DataFrame({
         "date": pd.date_range("2026-03-01", periods=4),
         "activity_high_activity_time": [60 * 30, 60 * 0, 60 * 45, 60 * 10],
@@ -37,5 +37,9 @@ def test_summary_filters_rest_mode_then_shifts():
         "in_rest_mode": [False, True, False, False],
     })
     s = summary(df)
-    # After dropping the rest-mode row, 3 remain -> 2 paired
-    assert s["caveat"]["n"] == 2
+    # Row 0: dropped — its tir_next neighbor (row 1) is rest-mode.
+    # Row 1: dropped — it IS rest-mode.
+    # Row 2: kept — non-rest-mode and tir_next (row 3) is non-rest-mode.
+    # Row 3: dropped — tir_next is NaN (no day 5).
+    # Remaining valid pairs: row 2 only → n=1.
+    assert s["caveat"]["n"] == 1

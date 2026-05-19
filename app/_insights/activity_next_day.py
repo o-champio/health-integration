@@ -12,14 +12,14 @@ import plotly.graph_objects as go
 import streamlit as st
 from scipy import stats as st_
 
-from app._insights._common import filter_rest_mode, monitored_caveat
+from app._insights._common import monitored_caveat
 from app._shared import chart
 
 _MIN_N = 10
 
 
 def summary(df: pd.DataFrame) -> dict:
-    df = filter_rest_mode(df).sort_values("date").copy()
+    df = df.sort_values("date").copy()
     if "activity_high_activity_time" not in df.columns:
         cav = {"n": 0, "rho": np.nan, "p": np.nan, "monitored": True,
                "significant": False}
@@ -28,6 +28,12 @@ def summary(df: pd.DataFrame) -> dict:
 
     df["high_activity_min"] = df["activity_high_activity_time"] / 60.0
     df["tir_next"] = df["glucose_tir"].shift(-1)
+    if "in_rest_mode" in df.columns:
+        rest = df["in_rest_mode"].astype("boolean").fillna(False).astype(bool)
+        rest_next = rest.shift(-1, fill_value=False)
+        keep = ~(rest | rest_next)
+        df = df.loc[keep]
+
     pair = df[["high_activity_min", "tir_next"]].dropna()
     n = len(pair)
     if n < _MIN_N:
