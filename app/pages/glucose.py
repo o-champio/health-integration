@@ -5,35 +5,8 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from app._shared import _filter_raw, _filter_events
-
-
-# ── Palette (mirrors app/main.py) ─────────────────────────────────────────────
-
-C: dict[str, str] = {
-    "bg": "#0F172A",
-    "card": "#111827",
-    "surface": "#1E293B",
-    "border": "#1F2937",
-    "text": "#E5E7EB",
-    "text_sec": "#9CA3AF",
-    "text_muted": "#64748B",
-    "primary": "#6C63FF",
-    "accent": "#818CF8",
-    "accent_soft": "#A5B4FC",
-    "success": "#22C55E",
-    "warning": "#F59E0B",
-    "danger": "#EF4444",
-    "sleep": "#818CF8",
-    "activity": "#22D3EE",
-    "glucose": "#34D399",
-    "chart1": "#6C63FF",
-    "chart2": "#22D3EE",
-    "chart3": "#34D399",
-    "pos": "#22C55E",
-    "neg": "#EF4444",
-    "neutral": "#64748B",
-}
+from app._shared import _filter_raw, _filter_events, chart, tabs_or_select
+from app._theme import C
 
 
 def render(df: pd.DataFrame, raw_glucose: pd.DataFrame,
@@ -41,17 +14,19 @@ def render(df: pd.DataFrame, raw_glucose: pd.DataFrame,
     raw = _filter_raw(raw_glucose, df)
     ev = _filter_events(events, df) if events is not None else pd.DataFrame()
 
-    tab_trends, tab_tir, tab_hourly, tab_meals = st.tabs(
-        ["Trends & GMI", "TIR Breakdown", "Hourly Patterns", "Insulin & Meals"]
-    )
-    with tab_trends:
-        _trends(df, ev)
-    with tab_tir:
-        _tir_breakdown(df)
-    with tab_hourly:
-        _hourly(raw)
-    with tab_meals:
-        _insulin_meals(df, ev)
+    labels = ["Trends & GMI", "TIR Breakdown", "Hourly Patterns", "Insulin & Meals"]
+    chosen = tabs_or_select(labels)
+    if chosen:  # mobile
+        if chosen == "Trends & GMI": _trends(df, ev)
+        elif chosen == "TIR Breakdown": _tir_breakdown(df)
+        elif chosen == "Hourly Patterns": _hourly(raw)
+        elif chosen == "Insulin & Meals": _insulin_meals(df, ev)
+    else:  # desktop
+        tab_trends, tab_tir, tab_hourly, tab_meals = st.tabs(labels)
+        with tab_trends: _trends(df, ev)
+        with tab_tir: _tir_breakdown(df)
+        with tab_hourly: _hourly(raw)
+        with tab_meals: _insulin_meals(df, ev)
 
 
 # ── Private helper ─────────────────────────────────────────────────────────────
@@ -115,7 +90,7 @@ def _trends(df: pd.DataFrame, events: pd.DataFrame) -> None:
             ))
 
     fig.update_layout(yaxis=dict(title="mg/dL"), height=320)
-    st.plotly_chart(fig, use_container_width=True, key="gl_trends")
+    chart(fig, key="gl_trends")
 
     n_readings = df["glucose_readings"].sum() if "glucose_readings" in df.columns else None
     n_days = df["date"].nunique()
@@ -151,7 +126,7 @@ def _trends(df: pd.DataFrame, events: pd.DataFrame) -> None:
     fig2.add_hline(y=6.5, line_dash="dash", line_color=C["success"],
                    annotation_text="6.5% excellent", annotation_font_color=C["success"])
     fig2.update_layout(yaxis=dict(title="GMI (%)"), height=260)
-    st.plotly_chart(fig2, use_container_width=True, key="gl_gmi")
+    chart(fig2, key="gl_gmi")
 
 
 def _tir_breakdown(df: pd.DataFrame) -> None:
@@ -180,7 +155,7 @@ def _tir_breakdown(df: pd.DataFrame) -> None:
         hovertemplate="%{label}: %{value:.1%}<extra></extra>",
     ))
     fig.update_layout(height=280, showlegend=False)
-    st.plotly_chart(fig, use_container_width=True, key="gl_tir_donut")
+    chart(fig, key="gl_tir_donut")
 
     st.markdown("#### Daily TIR Over Time")
     tir_data = df[["date"] + needed].dropna()
@@ -196,7 +171,7 @@ def _tir_breakdown(df: pd.DataFrame) -> None:
         yaxis=dict(title="Fraction of day", tickformat=".0%"),
         height=300,
     )
-    st.plotly_chart(fig2, use_container_width=True, key="gl_tir_daily")
+    chart(fig2, key="gl_tir_daily")
 
 
 def _hourly(raw: pd.DataFrame) -> None:
@@ -261,7 +236,7 @@ def _hourly(raw: pd.DataFrame) -> None:
         yaxis=dict(title="Glucose (mg/dL)"),
         height=320,
     )
-    st.plotly_chart(fig, use_container_width=True, key="gl_hourly")
+    chart(fig, key="gl_hourly")
 
     dawn = _dawn_rise(raw)
     if dawn is not None:
@@ -340,7 +315,7 @@ def _insulin_meals(df: pd.DataFrame, events: pd.DataFrame) -> None:
         height=320,
         legend=dict(orientation="h", y=1.08),
     )
-    st.plotly_chart(fig, use_container_width=True, key="gl_events")
+    chart(fig, key="gl_events")
 
     # Daily insulin totals if values present
     if has_rapid:
@@ -355,4 +330,4 @@ def _insulin_meals(df: pd.DataFrame, events: pd.DataFrame) -> None:
                 marker_color=C["danger"], name="Rapid insulin (units)",
             ))
             fig2.update_layout(yaxis=dict(title="Units"), height=240)
-            st.plotly_chart(fig2, use_container_width=True, key="gl_rapid_daily")
+            chart(fig2, key="gl_rapid_daily")

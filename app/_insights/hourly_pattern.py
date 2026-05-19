@@ -10,6 +10,8 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from app._shared import chart
+
 
 def summary(raw: pd.DataFrame) -> dict:
     """Return median/IQR glucose per hour and a dawn-rise scalar.
@@ -64,4 +66,4 @@ def render(raw: pd.DataFrame) -> None:
         height=300,
         margin=dict(l=10, r=10, t=10, b=10),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    chart(fig)

@@ -11,6 +11,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from app._insights._common import filter_rest_mode
+from app._shared import chart
 
 
 def summary(df: pd.DataFrame) -> dict:
@@ -60,4 +61,4 @@ def render(df: pd.DataFrame) -> None:
         height=300,
         margin=dict(l=10, r=10, t=10, b=10),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    chart(fig)

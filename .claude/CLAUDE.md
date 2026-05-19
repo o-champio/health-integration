@@ -132,3 +132,6 @@ CSVs have a metadata row before headers (skipped via `skiprows=1`). Timestamp fo
 - **Glucose thresholds**: Time-in-range = 70-180 mg/dL (configurable in `config/settings.py`). GMI formula: `3.31 + 0.02392 * mean_glucose`.
 - **CGM source switch**: `CUTOVER_DATE` in `config/settings.py` is the boundary — LibreLink CSVs feed days before it, Dexcom API feeds days on/after. The pipeline concatenates both into a single glucose series.
 - **Credentials**: `config/credentials.py` is gitignored. Copy from `config/credentials.example.py`. Never commit tokens or secrets.
+- **Theme ownership**: Palette, fonts, Plotly template, and the CSS string live in `app/_theme.py`. Pages and insight cards `from app._theme import C` — never re-declare the palette in a page module.
+- **Mobile layouts**: Pages branch layout via `app._mobile.is_mobile()` (viewport < 768 px via `streamlit-js-eval`). On mobile, the insights hub snapshot uses a 2/2/1 grid and card pairs stack to single column; deep-dive pages swap `st.tabs` for `st.selectbox` via `app._shared.tabs_or_select`.
+- **Plotly modebar**: Every chart goes through `app._shared.chart()` so the modebar stays hidden globally. Never call `st.plotly_chart` directly.

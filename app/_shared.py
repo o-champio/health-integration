@@ -5,11 +5,98 @@ here only when at least two pages use it.
 """
 from __future__ import annotations
 
-from datetime import timedelta
+import logging
+from datetime import date, timedelta
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+
+from app._theme import PLOTLY_CONFIG
+
+log = logging.getLogger(__name__)
+
+
+def chart(fig, *, use_container_width: bool = True, key: str | None = None,
+          height: int | None = None) -> None:
+    """Render a Plotly figure with the modebar hidden globally.
+
+    Use this everywhere instead of `st.plotly_chart(...)` so PLOTLY_CONFIG
+    stays the single source of truth for chart UX.
+    """
+    if height is not None:
+        fig.update_layout(height=height)
+    st.plotly_chart(fig, use_container_width=use_container_width,
+                    key=key, config=PLOTLY_CONFIG)
+
+
+@st.cache_data(ttl=43200)
+def _load_events() -> pd.DataFrame:
+    """Load insulin, food, and exercise events from LibreLink CSVs + Dexcom API.
+
+    Returns DataFrame with columns: timestamp, event_type, value
+      event_type: 'insulin_rapid' | 'insulin_long' | 'food' | 'exercise'
+      value: units (insulin), grams (food), minutes (exercise), NaN when not logged
+
+    Both sources are concatenated and de-duplicated by (timestamp, event_type).
+    """
+    frames: list[pd.DataFrame] = []
+
+    # LibreLink CSV events.
+    # Record Type mapping in the CSV is unreliable (observed: Type 4 rows carry
+    # the Rapid-Acting Insulin column, Type 5 rows carry Carbohydrates — opposite
+    # of the official spec). Detect each event by which value column is filled.
+    try:
+        from src.api.libre_client import load_all
+        raw = load_all()
+
+        candidates: list[tuple[str, list[str]]] = [
+            ("insulin_rapid", ["Rapid-Acting Insulin (units)", "Rapid Acting Insulin (units)"]),
+            ("food",          ["Carbohydrates (grams)", "Carbs (grams)"]),
+            ("insulin_long",  ["Long-Acting Insulin Value (units)", "Long-Acting Insulin (units)", "Long Acting Insulin (units)"]),
+        ]
+        for etype, cols in candidates:
+            col = next((c for c in cols if c in raw.columns), None)
+            if col is None:
+                continue
+            vals = pd.to_numeric(raw[col], errors="coerce")
+            mask = vals.notna() & (vals > 0)
+            if not mask.any():
+                continue
+            sub = pd.DataFrame({
+                "timestamp": raw.loc[mask, "Device Timestamp"].values,
+                "event_type": etype,
+                "value": vals[mask].values,
+            })
+            frames.append(sub)
+    except Exception as exc:
+        log.warning("Could not load LibreLink events: %s", exc)
+
+    # Dexcom API events — fetch from pipeline cutover through today
+    try:
+        from src.api.dexcom_client import DexcomClient
+        from config import settings as cfg
+        start = getattr(cfg, "CUTOVER_DATE", None) or date.today().replace(year=date.today().year - 1).isoformat()
+        end = date.today().isoformat()
+        dex_ev = DexcomClient().get_events(str(start), end)
+        if not dex_ev.empty:
+            frames.append(dex_ev)
+            log.info("Dexcom events: %d records fetched.", len(dex_ev))
+    except FileNotFoundError:
+        log.info("Dexcom token not found — skipping Dexcom events.")
+    except Exception as exc:
+        log.warning("Could not load Dexcom events: %s", exc)
+
+    if not frames:
+        return pd.DataFrame(columns=["timestamp", "event_type", "value"])
+
+    combined = pd.concat(frames, ignore_index=True)
+    combined["timestamp"] = pd.to_datetime(combined["timestamp"], errors="coerce")
+    combined = combined.dropna(subset=["timestamp"])
+    # Dedup: same event logged in both sources within the same minute
+    combined["_ts_min"] = combined["timestamp"].dt.floor("min")
+    combined = combined.drop_duplicates(subset=["_ts_min", "event_type"]).drop(columns="_ts_min")
+    return combined.sort_values("timestamp").reset_index(drop=True)
 
 
 # ── Category → column groups ──────────────────────────────────────────────────
@@ -179,4 +266,16 @@ def _dual_axis_chart(
         legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
         height=height,
     )
-    st.plotly_chart(fig, use_container_width=True, key=key or f"dual_{y1}_{y2}")
+    chart(fig, key=key or f"dual_{y1}_{y2}")
+
+
+def tabs_or_select(labels: list[str]) -> str:
+    """Render Streamlit tabs on desktop, a selectbox on mobile.
+
+    Returns the chosen label string on mobile, or an empty string on desktop
+    (sentinel for "use st.tabs"). The caller branches on the return value.
+    """
+    from app._mobile import is_mobile
+    if is_mobile():
+        return st.selectbox("Section", labels, label_visibility="collapsed")
+    return ""

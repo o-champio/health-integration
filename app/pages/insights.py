@@ -17,6 +17,7 @@ from app._insights import (
     rolling_tir,
     sleep_next_day,
 )
+from app._mobile import is_mobile
 
 
 def _latest(df: pd.DataFrame, col: str) -> float | None:
@@ -37,12 +38,21 @@ def _snapshot(df: pd.DataFrame) -> None:
     readiness = _latest(df, "readiness_score")
     activity = _latest(df, "activity_score")
 
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Time in Range", f"{tir:.1%}" if tir is not None else "—")
-    c2.metric("Mean Glucose", f"{mean_g:.0f} mg/dL" if mean_g is not None else "—")
-    c3.metric("Sleep Score", f"{sleep:.0f}" if sleep is not None else "—")
-    c4.metric("Readiness", f"{readiness:.0f}" if readiness is not None else "—")
-    c5.metric("Activity Score", f"{activity:.0f}" if activity is not None else "—")
+    if is_mobile():
+        r1c1, r1c2 = st.columns(2)
+        r1c1.metric("Time in Range", f"{tir:.1%}" if tir is not None else "—")
+        r1c2.metric("Mean Glucose", f"{mean_g:.0f} mg/dL" if mean_g is not None else "—")
+        r2c1, r2c2 = st.columns(2)
+        r2c1.metric("Sleep Score", f"{sleep:.0f}" if sleep is not None else "—")
+        r2c2.metric("Readiness", f"{readiness:.0f}" if readiness is not None else "—")
+        st.metric("Activity Score", f"{activity:.0f}" if activity is not None else "—")
+    else:
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("Time in Range", f"{tir:.1%}" if tir is not None else "—")
+        c2.metric("Mean Glucose", f"{mean_g:.0f} mg/dL" if mean_g is not None else "—")
+        c3.metric("Sleep Score", f"{sleep:.0f}" if sleep is not None else "—")
+        c4.metric("Readiness", f"{readiness:.0f}" if readiness is not None else "—")
+        c5.metric("Activity Score", f"{activity:.0f}" if activity is not None else "—")
 
 
 def render(df: pd.DataFrame, raw_glucose: pd.DataFrame) -> None:
@@ -63,18 +73,26 @@ def render(df: pd.DataFrame, raw_glucose: pd.DataFrame) -> None:
     st.divider()
 
     # Row 1: validated / descriptive
-    c1, c2 = st.columns(2)
-    with c1:
+    if is_mobile():
         deep_vs_rem.render(df)
-    with c2:
         hourly_pattern.render(raw_glucose)
+    else:
+        c1, c2 = st.columns(2)
+        with c1:
+            deep_vs_rem.render(df)
+        with c2:
+            hourly_pattern.render(raw_glucose)
 
     rolling_tir.render(df)
 
-    c3, c4 = st.columns(2)
-    with c3:
+    if is_mobile():
         sleep_next_day.render(df)
-    with c4:
         hrv_cv.render(df)
+    else:
+        c3, c4 = st.columns(2)
+        with c3:
+            sleep_next_day.render(df)
+        with c4:
+            hrv_cv.render(df)
 
     activity_next_day.render(df)
