@@ -15,35 +15,8 @@ from src.processing.workout_glucose import (
     glucose_response_curve,
     workout_summary_by_type,
 )
-from app._shared import _filter_raw
-
-
-# ── Palette (mirrors app/main.py) ─────────────────────────────────────────────
-
-C: dict[str, str] = {
-    "bg": "#0F172A",
-    "card": "#111827",
-    "surface": "#1E293B",
-    "border": "#1F2937",
-    "text": "#E5E7EB",
-    "text_sec": "#9CA3AF",
-    "text_muted": "#64748B",
-    "primary": "#6C63FF",
-    "accent": "#818CF8",
-    "accent_soft": "#A5B4FC",
-    "success": "#22C55E",
-    "warning": "#F59E0B",
-    "danger": "#EF4444",
-    "sleep": "#818CF8",
-    "activity": "#22D3EE",
-    "glucose": "#34D399",
-    "chart1": "#6C63FF",
-    "chart2": "#22D3EE",
-    "chart3": "#34D399",
-    "pos": "#22C55E",
-    "neg": "#EF4444",
-    "neutral": "#64748B",
-}
+from app._shared import _filter_raw, chart
+from app._theme import C
 
 
 def render(df: pd.DataFrame, raw_glucose: pd.DataFrame,
@@ -142,7 +115,7 @@ def render(df: pd.DataFrame, raw_glucose: pd.DataFrame,
                 height=450,
                 margin=dict(t=30, b=30),
             )
-            st.plotly_chart(fig, use_container_width=True, key="workout_response_curve")
+            chart(fig, key="workout_response_curve")
 
             # Individual traces (faded) per activity
             with st.expander("Individual workout traces"):
@@ -167,4 +140,4 @@ def render(df: pd.DataFrame, raw_glucose: pd.DataFrame,
                     height=400,
                     margin=dict(t=20, b=20),
                 )
-                st.plotly_chart(fig2, use_container_width=True, key="workout_individual_traces")
+                chart(fig2, key="workout_individual_traces")
