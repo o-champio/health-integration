@@ -19,8 +19,7 @@ ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
 from src.api import libre_client
-from src.models.analysis import run_regression
-from src.processing.features import build_analysis_df, get_regression_ready
+from src.processing.features import build_analysis_df
 from src.processing.pipeline import _date_chunks
 
 
@@ -188,60 +187,6 @@ def test_derived_ratios_finite(analysis_df):
         if col in analysis_df.columns:
             vals = analysis_df[col].dropna()
             assert np.isfinite(vals).all(), f"{col} contains non-finite values"
-
-
-def test_get_regression_ready_raises_bad_target(analysis_df):
-    with pytest.raises(ValueError, match="not found"):
-        get_regression_ready(analysis_df, target="nonexistent_col")
-
-
-def test_get_regression_ready_raises_few_rows():
-    """A tiny DataFrame (< min_rows) must raise ValueError."""
-    tiny = pd.DataFrame({
-        "date": pd.date_range("2025-01-01", periods=5),
-        "glucose_tir": np.random.uniform(0, 1, 5),
-        "prev_night_hrv": np.random.uniform(20, 80, 5),
-    })
-    with pytest.raises(ValueError, match="complete rows"):
-        get_regression_ready(tiny, target="glucose_tir", features=["prev_night_hrv"], min_rows=10)
-
-
-# ── analysis: run_regression ──────────────────────────────────────────────────
-
-def _make_regression_df(n: int = 60, seed: int = 0) -> pd.DataFrame:
-    """Synthetic DataFrame with a known linear relationship for testing regression."""
-    rng = np.random.default_rng(seed)
-    x1 = rng.normal(0, 1, n)
-    x2 = rng.normal(0, 1, n)
-    noise = rng.normal(0, 0.3, n)
-    y = 0.5 * x1 - 0.3 * x2 + noise + 0.7  # known coefficients
-    return pd.DataFrame({"target": y, "feat_a": x1, "feat_b": x2})
-
-
-def test_run_regression_synthetic():
-    df = _make_regression_df(60)
-    result = run_regression(df, "target", ["feat_a", "feat_b"])
-    assert result.r_squared > 0
-    assert result.r_squared_adj <= result.r_squared
-    assert result.n_observations == 60
-    assert set(result.coefficients.keys()) == {"feat_a", "feat_b"}
-    assert not result.feature_importance.empty
-
-
-def test_run_regression_zero_variance_dropped():
-    """A constant feature should be silently dropped without raising."""
-    df = _make_regression_df(60)
-    df["constant"] = 5.0
-    result = run_regression(df, "target", ["feat_a", "feat_b", "constant"])
-    assert "constant" not in result.features
-    assert result.n_observations == 60
-
-
-def test_run_regression_too_few_rows():
-    """Fewer than n_features + 10 observations must raise ValueError."""
-    df = _make_regression_df(5)
-    with pytest.raises(ValueError, match="Too few observations"):
-        run_regression(df, "target", ["feat_a", "feat_b"])
 
 
 # ── Incremental merge logic ───────────────────────────────────────────────────

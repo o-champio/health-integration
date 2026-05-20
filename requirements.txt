@@ -67,6 +67,7 @@ smmap==5.0.3
 stack-data==0.6.3
 statsmodels==0.14.6
 streamlit==1.55.0
+streamlit-js-eval>=0.1.7
 tenacity==9.1.4
 threadpoolctl==3.6.0
 toml==0.10.2
